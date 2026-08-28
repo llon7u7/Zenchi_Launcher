@@ -39,10 +39,12 @@ def _obtener_actividad():
         
         # Verificar que la actividad no sea None
         if actividad is not None:
+            print(f"[DEBUG] _obtener_actividad: Usando PythonActivity.mActivity = {actividad}")
             return actividad
             
         # Si mActivity es None, intentar con mInstance como fallback
         if hasattr(PythonActivity, 'mInstance') and PythonActivity.mInstance is not None:
+            print(f"[DEBUG] _obtener_actividad: Usando PythonActivity.mInstance = {PythonActivity.mInstance}")
             return PythonActivity.mInstance
             
     except Exception as e:
@@ -52,11 +54,13 @@ def _obtener_actividad():
         # Fallback: intentar acceder desde el módulo android
         from android import python_act
         if python_act is not None:
+            print(f"[DEBUG] _obtener_actividad: Usando android.python_act = {python_act}")
             return python_act
     except Exception as e:
         print(f"[ERROR] No se pudo obtener actividad (método 2): {e}")
     
     # Si todo falla, retornar None
+    print("[DEBUG] _obtener_actividad: No se pudo obtener ninguna actividad, retornando None")
     return None
 
 
@@ -81,6 +85,8 @@ def solicitar_ser_launcher_predeterminado() -> None:
     Context = autoclass("android.content.Context")
     Version = autoclass("android.os.Build$VERSION")
 
+    print(f"[DEBUG] SDK_INT = {Version.SDK_INT}")
+
     if Version.SDK_INT >= 29:
         RoleManager = autoclass("android.app.role.RoleManager")
         gestor_roles = cast(
@@ -91,13 +97,18 @@ def solicitar_ser_launcher_predeterminado() -> None:
         ya_es_holder = bool(gestor_roles.isRoleHeld(RoleManager.ROLE_HOME))
         
         print(f"[DEBUG] solicitar_ser_launcher: SDK={Version.SDK_INT}, disponible={disponible}, ya_es_holder={ya_es_holder}")
+        print(f"[DEBUG] Activity package name: {actividad.getPackageName()}")
         
         if disponible and not ya_es_holder:
             intent = gestor_roles.createRequestRoleIntent(RoleManager.ROLE_HOME)
             print("[DEBUG] Iniciando startActivityForResult para ROLE_HOME...")
+            print(f"[DEBUG] Usando actividad: {actividad}")
+            print(f"[DEBUG] Intent: {intent}")
             actividad.startActivityForResult(intent, 1001)
+        elif ya_es_holder:
+            print("[DEBUG] Zenchi YA ES el launcher predeterminado (isRoleHeld=true)")
         else:
-            print("[DEBUG] Zenchi ya es (o no puede ser) el launcher predeterminado en este equipo.")
+            print("[DEBUG] El rol HOME no está disponible en este dispositivo")
     else:
         print("[DEBUG] SDK < 29, usando método legacy")
         _abrir_ajustes_launcher_legado(actividad)
@@ -124,6 +135,8 @@ def es_launcher_predeterminado() -> bool:
 
     Context = autoclass("android.content.Context")
     Version = autoclass("android.os.Build$VERSION")
+    paquete_zenchi = str(actividad.getPackageName())
+    print(f"[DEBUG] es_launcher_predeterminado: package={paquete_zenchi}, SDK={Version.SDK_INT}")
 
     if Version.SDK_INT >= 29:
         RoleManager = autoclass("android.app.role.RoleManager")
@@ -131,8 +144,9 @@ def es_launcher_predeterminado() -> bool:
             "android.app.role.RoleManager",
             actividad.getSystemService(Context.ROLE_SERVICE),
         )
+        disponible = bool(gestor_roles.isRoleAvailable(RoleManager.ROLE_HOME))
         es_home = bool(gestor_roles.isRoleHeld(RoleManager.ROLE_HOME))
-        print(f"[DEBUG] es_launcher_predeterminado (Android {Version.SDK_INT}): ROLE_HOME = {es_home}")
+        print(f"[DEBUG] es_launcher_predeterminado (Android {Version.SDK_INT}): ROLE_HOME disponible={disponible}, held={es_home}")
         return es_home
 
     # Camino viejo (antes de Android 10): comparar quién resuelve CATEGORY_HOME.
@@ -144,7 +158,6 @@ def es_launcher_predeterminado() -> bool:
         print("[DEBUG] es_launcher_predeterminado (legacy): resolveActivity = None")
         return False
     paquete_actual = str(resolucion.activityInfo.packageName)
-    paquete_zenchi = str(actividad.getPackageName())
     es_home = paquete_actual == paquete_zenchi
     print(f"[DEBUG] es_launcher_predeterminado (legacy): paquete={paquete_actual}, zenchi={paquete_zenchi}, es_home={es_home}")
     return es_home
