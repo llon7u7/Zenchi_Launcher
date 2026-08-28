@@ -1,4 +1,4 @@
-```
+```python
 # Python
 __pycache__/
 *.pyc
@@ -16,29 +16,26 @@ build/
 dist/
 *.egg-info/
 
-# Logs
-*.log
-
-# Temporary files
-*.tmp
-*.swp
-*~
-
-# Coverage
-.coverage
-htmlcov/
-coverage/
-
-# IDE
+# Editors
 .vscode/
 .idea/
 *.swp
 *.swo
 
+# Logs
+*.log
+
+# Coverage
+.coverage
+coverage/
+htmlcov/
+
+# Testing
+.pytest_cache/
+.mypy_cache/
+.hypothesis/
+
 # OS
 .DS_Store
 Thumbs.db
-
-# MyPy
-.mypy_cache/
 ```

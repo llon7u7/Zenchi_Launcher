@@ -83,18 +83,26 @@ class ZenchiApp(App):
         return raiz
 
     def _al_pedir_ser_launcher(self, *_args):
+        print("[DEBUG] Solicitando ser launcher predeterminado...")
         solicitar_ser_launcher_predeterminado()
         # El resultado del diálogo llega de forma asíncrona (el usuario
         # tiene que confirmar), así que no sabemos el resultado al
-        # instante. Revisamos el estado un par de segundos después.
-        Clock.schedule_once(self._revisar_si_ya_es_launcher, 2)
+        # instante. Revisamos el estado varias veces para capturar el cambio.
+        Clock.schedule_once(self._revisar_si_ya_es_launcher, 1)
+        Clock.schedule_once(self._revisar_si_ya_es_launcher, 3)
+        Clock.schedule_once(self._revisar_si_ya_es_launcher, 5)
 
     def _revisar_si_ya_es_launcher(self, _dt):
+        print("[DEBUG] Revisando si ya es launcher...")
         if es_launcher_predeterminado():
+            print("[DEBUG] ¡Confirmado! Zenchi es ahora el launcher predeterminado")
             self.boton_launcher.text = "Zenchi ya es tu pantalla de inicio ✓"
             self.boton_launcher.disabled = True
             # IMPORTANTE: Forzar refresh de la lista de apps ahora que somos launcher
-            self._refrescar_lista_apps()
+            # Usar Clock.schedule_once para asegurar que el cambio de rol se propagó
+            Clock.schedule_once(lambda dt: self._refrescar_lista_apps(), 0.5)
+        else:
+            print("[DEBUG] Todavía no es launcher predeterminado")
 
     def _refrescar_lista_apps(self) -> None:
         """Limpia y vuelve a llenar la grilla con las apps instaladas.

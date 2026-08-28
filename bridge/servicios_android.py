@@ -74,6 +74,7 @@ def solicitar_ser_launcher_predeterminado() -> None:
     actividad = _obtener_actividad()
     
     if actividad is None:
+        print("[DEBUG] solicitar_ser_launcher_predeterminado: No hay actividad (modo desktop)")
         print("[demo escritorio] Aquí se abriría el diálogo de 'ser launcher predeterminado'.")
         return
 
@@ -86,14 +87,19 @@ def solicitar_ser_launcher_predeterminado() -> None:
             "android.app.role.RoleManager",
             actividad.getSystemService(Context.ROLE_SERVICE),
         )
-        if gestor_roles.isRoleAvailable(RoleManager.ROLE_HOME) and not gestor_roles.isRoleHeld(
-            RoleManager.ROLE_HOME
-        ):
+        disponible = bool(gestor_roles.isRoleAvailable(RoleManager.ROLE_HOME))
+        ya_es_holder = bool(gestor_roles.isRoleHeld(RoleManager.ROLE_HOME))
+        
+        print(f"[DEBUG] solicitar_ser_launcher: SDK={Version.SDK_INT}, disponible={disponible}, ya_es_holder={ya_es_holder}")
+        
+        if disponible and not ya_es_holder:
             intent = gestor_roles.createRequestRoleIntent(RoleManager.ROLE_HOME)
+            print("[DEBUG] Iniciando startActivityForResult para ROLE_HOME...")
             actividad.startActivityForResult(intent, 1001)
         else:
-            print("Zenchi ya es (o no puede ser) el launcher predeterminado en este equipo.")
+            print("[DEBUG] Zenchi ya es (o no puede ser) el launcher predeterminado en este equipo.")
     else:
+        print("[DEBUG] SDK < 29, usando método legacy")
         _abrir_ajustes_launcher_legado(actividad)
 
 
@@ -113,6 +119,7 @@ def es_launcher_predeterminado() -> bool:
     actividad = _obtener_actividad()
     
     if actividad is None:
+        print("[DEBUG] es_launcher_predeterminado: No hay actividad Android (modo desktop)")
         return False
 
     Context = autoclass("android.content.Context")
@@ -124,7 +131,9 @@ def es_launcher_predeterminado() -> bool:
             "android.app.role.RoleManager",
             actividad.getSystemService(Context.ROLE_SERVICE),
         )
-        return bool(gestor_roles.isRoleHeld(RoleManager.ROLE_HOME))
+        es_home = bool(gestor_roles.isRoleHeld(RoleManager.ROLE_HOME))
+        print(f"[DEBUG] es_launcher_predeterminado (Android {Version.SDK_INT}): ROLE_HOME = {es_home}")
+        return es_home
 
     # Camino viejo (antes de Android 10): comparar quién resuelve CATEGORY_HOME.
     Intent = autoclass("android.content.Intent")
@@ -132,8 +141,13 @@ def es_launcher_predeterminado() -> bool:
     intent.addCategory(Intent.CATEGORY_HOME)
     resolucion = actividad.getPackageManager().resolveActivity(intent, 0)
     if resolucion is None:
+        print("[DEBUG] es_launcher_predeterminado (legacy): resolveActivity = None")
         return False
-    return str(resolucion.activityInfo.packageName) == str(actividad.getPackageName())
+    paquete_actual = str(resolucion.activityInfo.packageName)
+    paquete_zenchi = str(actividad.getPackageName())
+    es_home = paquete_actual == paquete_zenchi
+    print(f"[DEBUG] es_launcher_predeterminado (legacy): paquete={paquete_actual}, zenchi={paquete_zenchi}, es_home={es_home}")
+    return es_home
 
 
 # ---------------------------------------------------------------------------
@@ -168,10 +182,6 @@ def listar_apps_instaladas() -> list[AppInstalada]:
         intent = Intent(Intent.ACTION_MAIN)
         intent.addCategory(Intent.CATEGORY_LAUNCHER)
 
-        # Usar FLAG_ACTIVITY_NEW_TASK para evitar problemas
-        flags = autoclass("android.content.Intent").FLAG_ACTIVITY_NEW_TASK
-        intent.setFlags(flags)
-
         resultados = administrador_paquetes.queryIntentActivities(intent, 0)
 
         apps: list[AppInstalada] = []
@@ -192,6 +202,8 @@ def listar_apps_instaladas() -> list[AppInstalada]:
         
     except Exception as e:
         print(f"[ERROR] Error al listar apps: {e}")
+        import traceback
+        traceback.print_exc()
         # Fallback a lista vacía en caso de error
         return []
 
