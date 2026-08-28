@@ -1,28 +1,61 @@
-```gitignore
-# Compiled and build artifacts
-*.class
-*.dex
+# Android build artifacts
 *.apk
 *.aar
+*.dex
 *.so
 *.jar
-# Dependencies
-.libs/
-# Build directories
+gen/
+bin/
+obj/
 build/
+.externalNativeBuild/
+.cxx/
+
+# Android Studio
+.idea/
+*.iml
+*.iws
+*.log
 .gradle/
+local.properties
+
 # Environment
 .env
 .env.local
-*.env.*
-# Editors
-.vscode/
-.idea/
+.env.*
+
+# Python (if applicable)
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+.venv/
+pip-log.txt
+pip-delete-this-directory.txt
+.tox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.log
+.git/modules/
+.pytest_cache/
+.mypy_cache/
+
+# General
+*.tmp
 *.swp
-*.swo
-# OS generated files
+*~
 .DS_Store
 Thumbs.db
-# Logs
-*.log
-```
+.vscode/
+node_modules/
+target/
+dist/
+htmlcov/
+cover/
