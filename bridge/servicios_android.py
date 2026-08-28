@@ -2,7 +2,7 @@
 Puente hacia las APIs de Android para convertir a Zenchi en el launcher
 (pantalla de inicio) y para listar/abrir las apps instaladas del usuario.
 
-ACTUALIZACIÓN: Corregida detección de Android y acceso a PackageManager para Buildozer
+ACTUALIZACIÓN: Corregida detección de actividad y manejo de PackageManager para Buildozer
 """
 
 from __future__ import annotations
@@ -28,21 +28,36 @@ class AppInstalada:
 # ---------------------------------------------------------------------------
 
 def _obtener_actividad():
-    """Obtiene la actividad actual de Python en Android."""
+    """Obtiene la actividad actual de Python en Android para Buildozer."""
     if not HAY_ANDROID:
         return None
     
     try:
-        # En Buildozer, PythonActivity está en org.kivy.android
+        # Método correcto para Buildozer: obtener mActivity de PythonActivity
         PythonActivity = autoclass("org.kivy.android.PythonActivity")
-        return PythonActivity.mActivity
-    except Exception:
-        try:
-            # Fallback para otras configuraciones
-            from android import python_act
+        actividad = PythonActivity.mActivity
+        
+        # Verificar que la actividad no sea None
+        if actividad is not None:
+            return actividad
+            
+        # Si mActivity es None, intentar con mInstance como fallback
+        if hasattr(PythonActivity, 'mInstance') and PythonActivity.mInstance is not None:
+            return PythonActivity.mInstance
+            
+    except Exception as e:
+        print(f"[ERROR] No se pudo obtener actividad (método 1): {e}")
+        
+    try:
+        # Fallback: intentar acceder desde el módulo android
+        from android import python_act
+        if python_act is not None:
             return python_act
-        except Exception:
-            return None
+    except Exception as e:
+        print(f"[ERROR] No se pudo obtener actividad (método 2): {e}")
+    
+    # Si todo falla, retornar None
+    return None
 
 
 def solicitar_ser_launcher_predeterminado() -> None:
@@ -136,6 +151,7 @@ def listar_apps_instaladas() -> list[AppInstalada]:
     
     if actividad is None:
         # Mock para desktop - solo visible durante desarrollo
+        print("[INFO] Modo desktop: mostrando apps de ejemplo")
         return [
             AppInstalada("Cámara", "com.ejemplo.camara"),
             AppInstalada("Mensajes", "com.ejemplo.mensajes"),
@@ -145,23 +161,39 @@ def listar_apps_instaladas() -> list[AppInstalada]:
             AppInstalada("Correo", "com.ejemplo.correo"),
         ]
 
-    administrador_paquetes = actividad.getPackageManager()
+    try:
+        administrador_paquetes = actividad.getPackageManager()
 
-    Intent = autoclass("android.content.Intent")
-    intent = Intent(Intent.ACTION_MAIN)
-    intent.addCategory(Intent.CATEGORY_LAUNCHER)
+        Intent = autoclass("android.content.Intent")
+        intent = Intent(Intent.ACTION_MAIN)
+        intent.addCategory(Intent.CATEGORY_LAUNCHER)
 
-    resultados = administrador_paquetes.queryIntentActivities(intent, 0)
+        # Usar FLAG_ACTIVITY_NEW_TASK para evitar problemas
+        flags = autoclass("android.content.Intent").FLAG_ACTIVITY_NEW_TASK
+        intent.setFlags(flags)
 
-    apps: list[AppInstalada] = []
-    for i in range(resultados.size()):
-        info_resolucion = resultados.get(i)
-        nombre = str(info_resolucion.loadLabel(administrador_paquetes))
-        paquete = str(info_resolucion.activityInfo.packageName)
-        apps.append(AppInstalada(nombre=nombre, paquete=paquete))
+        resultados = administrador_paquetes.queryIntentActivities(intent, 0)
 
-    apps.sort(key=lambda app: app.nombre.lower())
-    return apps
+        apps: list[AppInstalada] = []
+        for i in range(resultados.size()):
+            info_resolucion = resultados.get(i)
+            nombre = str(info_resolucion.loadLabel(administrador_paquetes))
+            paquete = str(info_resolucion.activityInfo.packageName)
+            apps.append(AppInstalada(nombre=nombre, paquete=paquete))
+
+        apps.sort(key=lambda app: app.nombre.lower())
+        
+        if len(apps) == 0:
+            print("[WARNING] No se encontraron apps instaladas")
+        else:
+            print(f"[INFO] Se encontraron {len(apps)} apps instaladas")
+        
+        return apps
+        
+    except Exception as e:
+        print(f"[ERROR] Error al listar apps: {e}")
+        # Fallback a lista vacía en caso de error
+        return []
 
 
 def abrir_app(paquete: str) -> None:
