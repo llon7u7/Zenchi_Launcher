@@ -2,12 +2,7 @@
 Puente hacia las APIs de Android para convertir a Zenchi en el launcher
 (pantalla de inicio) y para listar/abrir las apps instaladas del usuario.
 
-IMPORTANTE: `pyjnius` (la librería que permite llamar código Java/Android
-desde Python) SOLO existe cuando la app corre dentro de un teléfono Android
-real. En tu preview de escritorio (python main.py en Windows) no está
-disponible. Por eso, cada función de aquí revisa HAY_ANDROID: si es False,
-devuelve datos de ejemplo (mock) en vez de fallar, para que puedas seguir
-diseñando la interfaz sin tener el teléfono conectado todo el tiempo.
+ACTUALIZACIÓN: Corregida detección de Android y acceso a PackageManager para Buildozer
 """
 
 from __future__ import annotations
@@ -32,6 +27,24 @@ class AppInstalada:
 # Convertirse en el launcher predeterminado
 # ---------------------------------------------------------------------------
 
+def _obtener_actividad():
+    """Obtiene la actividad actual de Python en Android."""
+    if not HAY_ANDROID:
+        return None
+    
+    try:
+        # En Buildozer, PythonActivity está en org.kivy.android
+        PythonActivity = autoclass("org.kivy.android.PythonActivity")
+        return PythonActivity.mActivity
+    except Exception:
+        try:
+            # Fallback para otras configuraciones
+            from android import python_act
+            return python_act
+        except Exception:
+            return None
+
+
 def solicitar_ser_launcher_predeterminado() -> None:
     """Abre el diálogo nativo de Android para pedir 'usar Zenchi como
     pantalla de inicio'.
@@ -43,12 +56,12 @@ def solicitar_ser_launcher_predeterminado() -> None:
     Llama a esta función desde un botón en tu interfaz, por ejemplo:
         boton.bind(on_release=lambda *_: solicitar_ser_launcher_predeterminado())
     """
-    if not HAY_ANDROID:
+    actividad = _obtener_actividad()
+    
+    if actividad is None:
         print("[demo escritorio] Aquí se abriría el diálogo de 'ser launcher predeterminado'.")
         return
 
-    PythonActivity = autoclass("org.kivy.android.PythonActivity")
-    actividad = PythonActivity.mActivity
     Context = autoclass("android.content.Context")
     Version = autoclass("android.os.Build$VERSION")
 
@@ -82,11 +95,11 @@ def es_launcher_predeterminado() -> bool:
     Útil para, por ejemplo, ocultar el botón de 'hacerme predeterminado'
     una vez que ya se logró.
     """
-    if not HAY_ANDROID:
-        return False  # en escritorio asumimos que no, para poder ver el botón mientras diseñas
+    actividad = _obtener_actividad()
+    
+    if actividad is None:
+        return False
 
-    PythonActivity = autoclass("org.kivy.android.PythonActivity")
-    actividad = PythonActivity.mActivity
     Context = autoclass("android.content.Context")
     Version = autoclass("android.os.Build$VERSION")
 
@@ -119,7 +132,10 @@ def listar_apps_instaladas() -> list[AppInstalada]:
     En escritorio devuelve una lista de ejemplo, para que puedas diseñar
     y probar tu grilla de apps sin necesitar el teléfono conectado.
     """
-    if not HAY_ANDROID:
+    actividad = _obtener_actividad()
+    
+    if actividad is None:
+        # Mock para desktop - solo visible durante desarrollo
         return [
             AppInstalada("Cámara", "com.ejemplo.camara"),
             AppInstalada("Mensajes", "com.ejemplo.mensajes"),
@@ -129,8 +145,6 @@ def listar_apps_instaladas() -> list[AppInstalada]:
             AppInstalada("Correo", "com.ejemplo.correo"),
         ]
 
-    PythonActivity = autoclass("org.kivy.android.PythonActivity")
-    actividad = PythonActivity.mActivity
     administrador_paquetes = actividad.getPackageManager()
 
     Intent = autoclass("android.content.Intent")
@@ -156,12 +170,12 @@ def abrir_app(paquete: str) -> None:
     Llama a esto cuando el usuario toque un ícono en tu cajón de apps:
         boton_app.bind(on_release=lambda *_: abrir_app(app.paquete))
     """
-    if not HAY_ANDROID:
+    actividad = _obtener_actividad()
+    
+    if actividad is None:
         print(f"[demo escritorio] Aquí se abriría la app: {paquete}")
         return
 
-    PythonActivity = autoclass("org.kivy.android.PythonActivity")
-    actividad = PythonActivity.mActivity
     administrador_paquetes = actividad.getPackageManager()
     intent = administrador_paquetes.getLaunchIntentForPackage(paquete)
     if intent is not None:

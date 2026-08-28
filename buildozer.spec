@@ -16,7 +16,8 @@ android.ndk = 26b
 android.ndk_api = 29
 android.archs = arm64-v8a
 android.accept_sdk_license = True
-android.permissions = SYSTEM_ALERT_WINDOW,PACKAGE_USAGE_STATS
+android.permissions = SYSTEM_ALERT_WINDOW,PACKAGE_USAGE_STATS,QUERY_ALL_PACKAGES
+android.add_src = android_src
 
 [buildozer]
 log_level = 2
