@@ -8,22 +8,38 @@
     <!-- Permiso para ser launcher (pantalla de inicio) -->
     <uses-permission android:name="android.permission.SET_WALLPAPER" />
     <uses-permission android:name="android.permission.SET_WALLPAPER_HINTS" />
+    
+    <!-- Características requeridas para launcher -->
+    <uses-feature android:name="android.hardware.touchscreen" android:required="false"/>
+    <uses-feature android:name="android.software.home_screen" android:required="true"/>
 
-    <application>
+    <application
+        android:label="@string/app_name"
+        android:icon="@mipmap/icon">
         <!-- Declaración del Launcher - Zenchi como pantalla de inicio -->
         <activity
             android:name="org.kivy.android.PythonActivity"
             android:label="@string/app_name"
             android:launchMode="singleTask"
-            android:configChanges="orientation|keyboardHidden|screenSize"
-            android:exported="true">
-            
+            android:clearTaskOnLaunch="true"
+            android:stateNotNeeded="true"
+            android:resumeWhilePausing="true"
+            android:configChanges="orientation|keyboardHidden|screenSize|screenLayout|smallestScreenSize"
+            android:exported="true"
+            android:excludeFromRecents="false">
+
             <!-- Intent Filter para que Android reconozca Zenchi como launcher -->
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.HOME" />
                 <category android:name="android.intent.category.DEFAULT" />
                 <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+            
+            <!-- Segundo intent-filter explícito solo para CATEGORY_HOME -->
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.HOME" />
             </intent-filter>
         </activity>
     </application>
