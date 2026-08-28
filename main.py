@@ -1,6 +1,7 @@
 """
 Punto de entrada de la app Zenchi.
 
+ACTUALIZACIÓN: Forzar refresh de lista de apps después de convertirse en launcher
 Este archivo conecta el MOTOR (motor/politica.py) con Kivy.
 La parte de INTERFAZ (colores, layout, animaciones, estilo) es responsabilidad
 del desarrollador visual. Este backend ya maneja:
@@ -92,11 +93,20 @@ class ZenchiApp(App):
         if es_launcher_predeterminado():
             self.boton_launcher.text = "Zenchi ya es tu pantalla de inicio ✓"
             self.boton_launcher.disabled = True
+            # IMPORTANTE: Forzar refresh de la lista de apps ahora que somos launcher
+            self._refrescar_lista_apps()
 
     def _refrescar_lista_apps(self) -> None:
-        """Limpia y vuelve a llenar la grilla con las apps instaladas."""
+        """Limpia y vuelve a llenar la grilla con las apps instaladas.
+        
+        ACTUALIZACIÓN: Agregar logging para debug en Android
+        """
+        print("[DEBUG] Refrescando lista de apps...")
         self.grilla_apps.clear_widgets()
-        for app in listar_apps_instaladas():
+        apps = listar_apps_instaladas()
+        print(f"[DEBUG] Apps encontradas: {len(apps)}")
+        for app in apps:
+            print(f"[DEBUG] App: {app.nombre} ({app.paquete})")
             boton_app = Button(
                 text=app.nombre,
                 size_hint_y=None,
