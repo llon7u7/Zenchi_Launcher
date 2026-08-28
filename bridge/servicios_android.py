@@ -2,7 +2,7 @@
 Puente hacia las APIs de Android para convertir a Zenchi en el launcher
 (pantalla de inicio) y para listar/abrir las apps instaladas del usuario.
 
-ACTUALIZACIÓN: Corregida detección de Android y acceso a PackageManager para Buildozer
+ACTUALIZACIÓN: Corregida detección de actividad y manejo de PackageManager para Buildozer
 """
 
 from __future__ import annotations
@@ -28,21 +28,36 @@ class AppInstalada:
 # ---------------------------------------------------------------------------
 
 def _obtener_actividad():
-    """Obtiene la actividad actual de Python en Android."""
+    """Obtiene la actividad actual de Python en Android para Buildozer."""
     if not HAY_ANDROID:
         return None
     
     try:
-        # En Buildozer, PythonActivity está en org.kivy.android
+        # Método correcto para Buildozer: obtener mActivity de PythonActivity
         PythonActivity = autoclass("org.kivy.android.PythonActivity")
-        return PythonActivity.mActivity
-    except Exception:
-        try:
-            # Fallback para otras configuraciones
-            from android import python_act
+        actividad = PythonActivity.mActivity
+        
+        # Verificar que la actividad no sea None
+        if actividad is not None:
+            return actividad
+            
+        # Si mActivity es None, intentar con mInstance como fallback
+        if hasattr(PythonActivity, 'mInstance') and PythonActivity.mInstance is not None:
+            return PythonActivity.mInstance
+            
+    except Exception as e:
+        print(f"[ERROR] No se pudo obtener actividad (método 1): {e}")
+        
+    try:
+        # Fallback: intentar acceder desde el módulo android
+        from android import python_act
+        if python_act is not None:
             return python_act
-        except Exception:
-            return None
+    except Exception as e:
+        print(f"[ERROR] No se pudo obtener actividad (método 2): {e}")
+    
+    # Si todo falla, retornar None
+    return None
 
 
 def solicitar_ser_launcher_predeterminado() -> None:
@@ -59,6 +74,7 @@ def solicitar_ser_launcher_predeterminado() -> None:
     actividad = _obtener_actividad()
     
     if actividad is None:
+        print("[DEBUG] solicitar_ser_launcher_predeterminado: No hay actividad (modo desktop)")
         print("[demo escritorio] Aquí se abriría el diálogo de 'ser launcher predeterminado'.")
         return
 
@@ -71,14 +87,19 @@ def solicitar_ser_launcher_predeterminado() -> None:
             "android.app.role.RoleManager",
             actividad.getSystemService(Context.ROLE_SERVICE),
         )
-        if gestor_roles.isRoleAvailable(RoleManager.ROLE_HOME) and not gestor_roles.isRoleHeld(
-            RoleManager.ROLE_HOME
-        ):
+        disponible = bool(gestor_roles.isRoleAvailable(RoleManager.ROLE_HOME))
+        ya_es_holder = bool(gestor_roles.isRoleHeld(RoleManager.ROLE_HOME))
+        
+        print(f"[DEBUG] solicitar_ser_launcher: SDK={Version.SDK_INT}, disponible={disponible}, ya_es_holder={ya_es_holder}")
+        
+        if disponible and not ya_es_holder:
             intent = gestor_roles.createRequestRoleIntent(RoleManager.ROLE_HOME)
+            print("[DEBUG] Iniciando startActivityForResult para ROLE_HOME...")
             actividad.startActivityForResult(intent, 1001)
         else:
-            print("Zenchi ya es (o no puede ser) el launcher predeterminado en este equipo.")
+            print("[DEBUG] Zenchi ya es (o no puede ser) el launcher predeterminado en este equipo.")
     else:
+        print("[DEBUG] SDK < 29, usando método legacy")
         _abrir_ajustes_launcher_legado(actividad)
 
 
@@ -98,6 +119,7 @@ def es_launcher_predeterminado() -> bool:
     actividad = _obtener_actividad()
     
     if actividad is None:
+        print("[DEBUG] es_launcher_predeterminado: No hay actividad Android (modo desktop)")
         return False
 
     Context = autoclass("android.content.Context")
@@ -109,7 +131,9 @@ def es_launcher_predeterminado() -> bool:
             "android.app.role.RoleManager",
             actividad.getSystemService(Context.ROLE_SERVICE),
         )
-        return bool(gestor_roles.isRoleHeld(RoleManager.ROLE_HOME))
+        es_home = bool(gestor_roles.isRoleHeld(RoleManager.ROLE_HOME))
+        print(f"[DEBUG] es_launcher_predeterminado (Android {Version.SDK_INT}): ROLE_HOME = {es_home}")
+        return es_home
 
     # Camino viejo (antes de Android 10): comparar quién resuelve CATEGORY_HOME.
     Intent = autoclass("android.content.Intent")
@@ -117,8 +141,13 @@ def es_launcher_predeterminado() -> bool:
     intent.addCategory(Intent.CATEGORY_HOME)
     resolucion = actividad.getPackageManager().resolveActivity(intent, 0)
     if resolucion is None:
+        print("[DEBUG] es_launcher_predeterminado (legacy): resolveActivity = None")
         return False
-    return str(resolucion.activityInfo.packageName) == str(actividad.getPackageName())
+    paquete_actual = str(resolucion.activityInfo.packageName)
+    paquete_zenchi = str(actividad.getPackageName())
+    es_home = paquete_actual == paquete_zenchi
+    print(f"[DEBUG] es_launcher_predeterminado (legacy): paquete={paquete_actual}, zenchi={paquete_zenchi}, es_home={es_home}")
+    return es_home
 
 
 # ---------------------------------------------------------------------------
@@ -136,6 +165,7 @@ def listar_apps_instaladas() -> list[AppInstalada]:
     
     if actividad is None:
         # Mock para desktop - solo visible durante desarrollo
+        print("[INFO] Modo desktop: mostrando apps de ejemplo")
         return [
             AppInstalada("Cámara", "com.ejemplo.camara"),
             AppInstalada("Mensajes", "com.ejemplo.mensajes"),
@@ -145,23 +175,37 @@ def listar_apps_instaladas() -> list[AppInstalada]:
             AppInstalada("Correo", "com.ejemplo.correo"),
         ]
 
-    administrador_paquetes = actividad.getPackageManager()
+    try:
+        administrador_paquetes = actividad.getPackageManager()
 
-    Intent = autoclass("android.content.Intent")
-    intent = Intent(Intent.ACTION_MAIN)
-    intent.addCategory(Intent.CATEGORY_LAUNCHER)
+        Intent = autoclass("android.content.Intent")
+        intent = Intent(Intent.ACTION_MAIN)
+        intent.addCategory(Intent.CATEGORY_LAUNCHER)
 
-    resultados = administrador_paquetes.queryIntentActivities(intent, 0)
+        resultados = administrador_paquetes.queryIntentActivities(intent, 0)
 
-    apps: list[AppInstalada] = []
-    for i in range(resultados.size()):
-        info_resolucion = resultados.get(i)
-        nombre = str(info_resolucion.loadLabel(administrador_paquetes))
-        paquete = str(info_resolucion.activityInfo.packageName)
-        apps.append(AppInstalada(nombre=nombre, paquete=paquete))
+        apps: list[AppInstalada] = []
+        for i in range(resultados.size()):
+            info_resolucion = resultados.get(i)
+            nombre = str(info_resolucion.loadLabel(administrador_paquetes))
+            paquete = str(info_resolucion.activityInfo.packageName)
+            apps.append(AppInstalada(nombre=nombre, paquete=paquete))
 
-    apps.sort(key=lambda app: app.nombre.lower())
-    return apps
+        apps.sort(key=lambda app: app.nombre.lower())
+        
+        if len(apps) == 0:
+            print("[WARNING] No se encontraron apps instaladas")
+        else:
+            print(f"[INFO] Se encontraron {len(apps)} apps instaladas")
+        
+        return apps
+        
+    except Exception as e:
+        print(f"[ERROR] Error al listar apps: {e}")
+        import traceback
+        traceback.print_exc()
+        # Fallback a lista vacía en caso de error
+        return []
 
 
 def abrir_app(paquete: str) -> None:
