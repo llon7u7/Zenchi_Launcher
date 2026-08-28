@@ -1,41 +1,72 @@
-```python
-# Python
-__pycache__/
-*.pyc
-*.pyo
-*.pyd
-.Python
-venv/
+```
+# Dependencies
+node_modules/
 .venv/
-.env
-.env.local
-.env.*
+venv/
+__pycache__/
+.mypy_cache/
+.pytest_cache/
+target/
+.gradle/
 
 # Build artifacts
-build/
 dist/
-*.egg-info/
+build/
+*.pyc
+*.class
+*.o
+*.obj
+*.out
+*.dll
+*.so
+*.a
+*.exe
 
-# Editors
+# Environment files
+.env
+.env.local
+*.env.*
+
+# Editor/IDE files
 .vscode/
 .idea/
 *.swp
 *.swo
+*.tmp
 
 # Logs
 *.log
 
 # Coverage
-.coverage
 coverage/
 htmlcov/
+.coverage
 
-# Testing
-.pytest_cache/
-.mypy_cache/
-.hypothesis/
-
-# OS
+# OS files
 .DS_Store
 Thumbs.db
+
+# Compressed files
+*.zip
+*.gz
+*.tar
+*.tgz
+*.bz2
+*.xz
+*.7z
+*.rar
+*.zst
+*.lz4
+*.lzh
+*.cab
+*.arj
+*.rpm
+*.deb
+*.Z
+*.lz
+*.lzo
+*.tar.gz
+*.tar.bz2
+*.tar.xz
+*.tar.zst
 ```
