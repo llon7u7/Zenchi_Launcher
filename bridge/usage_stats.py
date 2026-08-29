@@ -250,7 +250,11 @@ def obtener_estadisticas_uso(rango_horas: int = 24) -> list[EstadisticaUso]:
 
 
 def detectar_app_en_primer_plano() -> AppState:
-    """Detecta qué aplicación está actualmente en primer plano.
+    """Detecta qué aplicación está actualmente en primer plano usando UsageEvents.
+    
+    Usa eventos de cambio de estado (MOVE_TO_FOREGROUND, MOVE_TO_BACKGROUND)
+    para determinar con precisión qué app está realmente activa, evitando
+    contar apps que están en segundo plano.
     
     Returns:
         AppState con el paquete de la app activa y metadata temporal.
@@ -268,9 +272,8 @@ def detectar_app_en_primer_plano() -> AppState:
     try:
         Context = autoclass("android.content.Context")
         UsageStatsManager = autoclass("android.app.usage.UsageStatsManager")
-        ActivityManager = autoclass("android.app.ActivityManager")
+        UsageEvents = autoclass("android.app.usage.UsageEvents")
         
-        # Método 1: Usar UsageStatsManager para apps recientes
         usage_stats_manager = cast(
             "android.app.usage.UsageStatsManager",
             actividad.getSystemService(Context.USAGE_STATS_SERVICE)
@@ -278,6 +281,46 @@ def detectar_app_en_primer_plano() -> AppState:
         
         ahora_ms = int(datetime.now().timestamp() * 1000)
         inicio_ms = ahora_ms - (60 * 60 * 1000)  # Última hora
+        
+        # Obtener eventos de uso detallados
+        eventos = usage_stats_manager.queryEvents(inicio_ms, ahora_ms)
+        
+        if eventos is not None and eventos.hasNextEvent():
+            ultimo_evento_foreground = None
+            timestamp_ultimo_foreground = 0
+            
+            # Iterar sobre todos los eventos buscando el último MOVE_TO_FOREGROUND
+            while eventos.hasNextEvent():
+                evento = UsageEvents.Event()
+                eventos.getNextEvent(evento)
+                
+                tipo_evento = evento.getEventType()
+                
+                # Solo nos interesan eventos de cambio a primer plano
+                if tipo_evento == UsageEvents.Event.MOVE_TO_FOREGROUND:
+                    timestamp_evento = int(evento.getTimeStamp())
+                    if timestamp_evento > timestamp_ultimo_foreground:
+                        timestamp_ultimo_foreground = timestamp_evento
+                        ultimo_evento_foreground = str(evento.getPackageName())
+            
+            if ultimo_evento_foreground:
+                tiempo_transcurrido = ahora_ms - timestamp_ultimo_foreground
+                
+                # Si han pasado más de 5 minutos desde el último evento foreground,
+                # probablemente la app ya no está activa
+                if tiempo_transcurrido < 300000:  # 5 minutos
+                    print(f"[DEBUG] App en primer plano (UsageEvents): {ultimo_evento_foreground} (hace {tiempo_transcurrido}ms)")
+                    
+                    return AppState(
+                        paquete_en_primer_plano=ultimo_evento_foreground,
+                        tiempo_desde_ultimo_cambio_ms=tiempo_transcurrido,
+                        timestamp_ultimo_cambio=timestamp_ultimo_foreground
+                    )
+                else:
+                    print(f"[DEBUG] Último evento foreground fue hace mucho tiempo ({tiempo_transcurrido}ms), considerando como sin app activa")
+        
+        # Fallback: Método anterior con queryUsageStats si no hay eventos
+        print("[DEBUG] No se encontraron eventos recientes, usando fallback con UsageStats")
         
         stats = usage_stats_manager.queryUsageStats(
             UsageStatsManager.INTERVAL_BEST,
@@ -301,15 +344,20 @@ def detectar_app_en_primer_plano() -> AppState:
             if paquete_activo:
                 tiempo_transcurrido = ahora_ms - ultimo_timestamp
                 
-                print(f"[DEBUG] App en primer plano: {paquete_activo} (hace {tiempo_transcurrido}ms)")
-                
-                return AppState(
-                    paquete_en_primer_plano=paquete_activo,
-                    tiempo_desde_ultimo_cambio_ms=tiempo_transcurrido,
-                    timestamp_ultimo_cambio=ultimo_timestamp
-                )
+                # Solo considerar como primer plano si es muy reciente (< 2 minutos)
+                if tiempo_transcurrido < 120000:  # 2 minutos
+                    print(f"[DEBUG] App en primer plano (fallback UsageStats): {paquete_activo} (hace {tiempo_transcurrido}ms)")
+                    
+                    return AppState(
+                        paquete_en_primer_plano=paquete_activo,
+                        tiempo_desde_ultimo_cambio_ms=tiempo_transcurrido,
+                        timestamp_ultimo_cambio=ultimo_timestamp
+                    )
+                else:
+                    print(f"[DEBUG] App '{paquete_activo}' parece estar en segundo plano (hace {tiempo_transcurrido}ms)")
         
-        # Método 2: Fallback con ActivityManager (Android < 5.0)
+        # Fallback adicional con ActivityManager para Android < 5.0
+        ActivityManager = autoclass("android.app.ActivityManager")
         activity_manager = cast(
             "android.app.ActivityManager",
             actividad.getSystemService(Context.ACTIVITY_SERVICE)
@@ -319,7 +367,7 @@ def detectar_app_en_primer_plano() -> AppState:
         if tareas is not None and tareas.size() > 0:
             tarea_superior = tareas.get(0)
             componente = tarea_superior.topActivity
-            paquete_activo = str(componento.getPackageName())
+            paquete_activo = str(componente.getPackageName())
             
             print(f"[DEBUG] App en primer plano (ActivityManager): {paquete_activo}")
             
