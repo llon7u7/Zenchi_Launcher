@@ -29,6 +29,13 @@ from bridge.servicios_android import (
     listar_apps_instaladas,
     solicitar_ser_launcher_predeterminado,
 )
+from bridge.usage_stats import (
+    AppState,
+    detectar_app_en_primer_plano,
+    formatear_tiempo,
+    obtener_permiso_usage_stats,
+    solicitar_permiso_usage_stats,
+)
 
 
 class ZenchiApp(App):
@@ -37,6 +44,13 @@ class ZenchiApp(App):
     limite_segundos = NumericProperty(60 * 60)       # límite diario: 1 hora
     estado_mascota = StringProperty(EstadoMascota.OCIOSO.value)
     sesion_activa = False
+    
+    # --- Monitoreo de uso por app ---
+    app_en_primer_plano = StringProperty("")
+    tiempo_app_actual = NumericProperty(0)
+    tiene_permiso_usage_stats = False
+    cache_tiempos_por_app = {}  # {paquete: segundos_acumulados}
+    paquete_restringido_actual = None
 
     def build(self):
         self.title = "Zenchi"
@@ -50,6 +64,15 @@ class ZenchiApp(App):
         self.etiqueta_mascota = Label(text=f"[ {self.estado_mascota} ]", font_size=sp(28))
         raiz.add_widget(self.etiqueta_mascota)
 
+        # --- Etiqueta para mostrar app en primer plano y tiempo ---
+        self.etiqueta_app_activa = Label(
+            text="App activa: --",
+            font_size=sp(14),
+            size_hint_y=None,
+            height=dp(30),
+        )
+        raiz.add_widget(self.etiqueta_app_activa)
+
         self.barra_progreso = ProgressBar(max=100, value=0, size_hint_y=None, height=dp(20))
         raiz.add_widget(self.barra_progreso)
 
@@ -57,6 +80,12 @@ class ZenchiApp(App):
         boton_iniciar = Button(text="Iniciar sesión de enfoque")
         boton_iniciar.bind(on_release=self._al_iniciar_sesion)
         botones.add_widget(boton_iniciar)
+        
+        # Botón para verificar permisos UsageStats
+        boton_permiso = Button(text="Verificar permiso UsageStats")
+        boton_permiso.bind(on_release=self._verificar_permiso_usage_stats)
+        botones.add_widget(boton_permiso)
+        
         raiz.add_widget(botones)
 
         # --- Convertirse en launcher predeterminado ---
@@ -128,25 +157,89 @@ class ZenchiApp(App):
     def _al_iniciar_sesion(self, *_args):
         self.sesion_activa = True
         self.etiqueta_estado.text = "Sesión de enfoque activa."
+        print("[DEBUG] Sesión de enfoque iniciada")
+
+    def _verificar_permiso_usage_stats(self, *_args):
+        """Verifica y solicita permiso UsageStats si es necesario."""
+        print("[DEBUG] Verificando permiso UsageStats...")
+        self.tiene_permiso_usage_stats = obtener_permiso_usage_stats()
+        
+        if not self.tiene_permiso_usage_stats:
+            print("[INFO] Solicitando permiso UsageStats al usuario")
+            solicitar_permiso_usage_stats()
+        else:
+            print("[DEBUG] Permiso UsageStats ya concedido")
+
+    def _actualizar_monitoreo_apps(self):
+        """Actualiza el estado de la app en primer plano y acumula tiempo."""
+        if not self.sesion_activa:
+            return
+        
+        # Detectar app en primer plano
+        estado_app = detectar_app_en_primer_plano()
+        
+        if estado_app.paquete_en_primer_plano:
+            # Calcular tiempo desde el último cambio (en segundos)
+            tiempo_transcurrido_seg = estado_app.tiempo_desde_ultimo_cambio_ms // 1000
+            
+            # Si cambió la app en primer plano
+            if self.app_en_primer_plano != estado_app.paquete_en_primer_plano:
+                self.app_en_primer_plano = estado_app.paquete_en_primer_plano
+                self.tiempo_app_actual = 0
+                print(f"[DEBUG] Nueva app en primer plano: {self.app_en_primer_plano}")
+            
+            # Acumular tiempo para esta app
+            from bridge.usage_stats import acumular_tiempo_sesion
+            self.cache_tiempos_por_app = acumular_tiempo_sesion(
+                self.app_en_primer_plano,
+                1,  # acumulamos 1 segundo por tick
+                self.cache_tiempos_por_app
+            )
+            
+            # Actualizar UI
+            nombre_app = self.app_en_primer_plano.split('.')[-1]  # Mostrar solo última parte del paquete
+            tiempo_acumulado = self.cache_tiempos_por_app.get(self.app_en_primer_plano, 0)
+            self.etiqueta_app_activa.text = f"App: {nombre_app} | Tiempo: {tiempo_acumulado}s"
+            self.tiempo_app_actual = tiempo_acumulado
+            
+            # Verificar si esta app tiene restricciones (ejemplo: si supera cierto límite)
+            # Esto se puede personalizar según políticas específicas por app
+            if tiempo_acumulado > 300:  # Más de 5 minutos en una sola app
+                self.paquete_restringido_actual = self.app_en_primer_plano
+                print(f"[WARNING] App {self.app_en_primer_plano} superó límite de sesión")
+            else:
+                self.paquete_restringido_actual = None
+        else:
+            self.etiqueta_app_activa.text = "App activa: --"
 
     def _actualizar(self, _dt):
         if not self.sesion_activa:
             return
 
-        # 1. Avanza el tiempo usado
+        # 1. Actualizar monitoreo de apps
+        self._actualizar_monitoreo_apps()
+
+        # 2. Avanza el tiempo usado global
         self.segundos_usados = min(self.segundos_usados + 1, self.limite_segundos)
 
-        # 2. Le preguntas al MOTOR qué debe pasar
-        uso = InstantaneaUso(int(self.segundos_usados), int(self.limite_segundos))
+        # 3. Le preguntas al MOTOR qué debe pasar
+        uso = InstantaneaUso(
+            int(self.segundos_usados),
+            int(self.limite_segundos),
+            paquete_restringido=self.paquete_restringido_actual
+        )
         decision = self.motor.decidir(uso)
 
-        # 3. La interfaz solo se encarga de MOSTRAR lo que el motor decidió.
+        # 4. La interfaz solo se encarga de MOSTRAR lo que el motor decidió.
         self.estado_mascota = decision.estado.value
         self.etiqueta_mascota.text = f"[ {decision.estado.value} ]"
         self.barra_progreso.value = min(100, int(uso.proporcion_uso * 100))
 
         if decision.bloqueado:
-            self.etiqueta_estado.text = "Acceso bloqueado por la política configurada."
+            if decision.motivo == "reflexion_requerida":
+                self.etiqueta_estado.text = "Reflexión requerida antes de continuar."
+            else:
+                self.etiqueta_estado.text = "Acceso bloqueado por la política configurada."
 
 
 if __name__ == "__main__":
