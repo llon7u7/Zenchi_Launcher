@@ -1,61 +1,43 @@
-# Android build artifacts
-*.apk
-*.aar
-*.dex
-*.so
-*.jar
-gen/
-bin/
-obj/
+```
+# Build artifacts
 build/
-.externalNativeBuild/
-.cxx/
 
-# Android Studio
-.idea/
-*.iml
-*.iws
+# Dependencies
+.python-version
+.libs/
+
+# Logs and temp files
 *.log
-.gradle/
-local.properties
+*.tmp
 
 # Environment
 .env
 .env.local
-.env.*
+*.env.*
 
-# Python (if applicable)
+# Coverage
+.coverage
+coverage/
+htmlcov/
+
+# Editors
+.vscode/
+.idea/
+
+# Python
 __pycache__/
 *.pyc
 *.pyo
 *.pyd
 .Python
-env/
-venv/
-.venv/
-pip-log.txt
-pip-delete-this-directory.txt
-.tox/
-.coverage
-.coverage.*
-.cache
-nosetests.xml
-coverage.xml
-*.cover
-*.log
-.git/modules/
-.pytest_cache/
-.mypy_cache/
+*.so
+*.egg-info/
+.eggs/
 
-# General
-*.tmp
-*.swp
-*~
+# OS
 .DS_Store
 Thumbs.db
-.vscode/
-node_modules/
-target/
-dist/
-htmlcov/
-cover/
+
+# Project specific
+bin/
+```
