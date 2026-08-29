@@ -1,8 +1,8 @@
 {
   "fecha": "2026-08-29",
-  "tiempo_total": 103,
+  "tiempo_total": 133,
   "tiempo_por_app": {
-    "com.instagram.android": 103
+    "com.instagram.android": 133
   },
   "apps_bloqueadas": [
     "com.ejemplo.mensajes"

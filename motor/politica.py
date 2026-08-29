@@ -72,6 +72,73 @@ UMBRAL_ADVERTENCIA = 0.8       # a partir de aquí, la mascota se ve angustiada
 UMBRAL_ADVERTENCIA_FUERTE = 0.9  # a partir de aquí, el mensaje se intensifica
 
 
+def calcular_limite_dinamico(
+    tiempo_total_hoy: int,
+    tiempo_por_app: dict[str, int],
+    paquete_actual: str | None,
+    limite_base_segundos: int = 60 * 60,
+    limite_base_app_segundos: int = 30 * 60,
+) -> tuple[int, int]:
+    """Calcula un límite diario y por app según el patrón real del usuario.
+
+    Si una app concentra gran parte del tiempo de uso, se vuelve más restrictiva.
+    Si la persona está usando varias apps, se deja algo más de margen a las menos
+    adictivas y se endurece el total general.
+    """
+    if not tiempo_por_app:
+        return limite_base_segundos, limite_base_app_segundos
+
+    total = max(sum(tiempo_por_app.values()), 1)
+    app_actual = tiempo_por_app.get(paquete_actual, 0) if paquete_actual else 0
+
+    # Riesgo por concentración de uso en una sola app.
+    if total > 0:
+        proporcion_app = app_actual / total
+    else:
+        proporcion_app = 0.0
+
+    if proporcion_app >= 0.45:
+        factor_app = 0.55
+    elif proporcion_app >= 0.30:
+        factor_app = 0.7
+    elif proporcion_app >= 0.18:
+        factor_app = 0.85
+    elif proporcion_app <= 0.05:
+        factor_app = 1.2
+    else:
+        factor_app = 1.0
+
+    apps_adictivas = {
+        "com.instagram.android",
+        "com.zhiliao.musically",
+        "com.google.android.youtube",
+        "com.reddit.frontpage",
+        "com.twitter.android",
+        "com.facebook.katana",
+        "com.snapchat.android",
+        "com.tiktok.android",
+    }
+    if paquete_actual and paquete_actual in apps_adictivas:
+        factor_app *= 0.8
+
+    limite_app = int(limite_base_app_segundos * factor_app)
+    limite_app = max(300, min(5400, limite_app))
+
+    # Si el usuario ya está acumulando mucho uso global, se reduce el total diario.
+    proporcion_total = min(1.0, tiempo_total_hoy / max(limite_base_segundos, 1))
+    if proporcion_total >= 0.8:
+        factor_total = 0.8
+    elif proporcion_total >= 0.6:
+        factor_total = 0.9
+    else:
+        factor_total = 1.0
+
+    limite_total = int(limite_base_segundos * factor_total)
+    limite_total = max(1800, min(limite_base_segundos * 2, limite_total))
+
+    return limite_total, limite_app
+
+
 class MotorZenchi:
     """El "cerebro" que toma la decisión. Sin estado propio: le das una
     InstantaneaUso y te regresa siempre la misma Decision para los mismos

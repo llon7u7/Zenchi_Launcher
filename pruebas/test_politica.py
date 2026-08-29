@@ -5,7 +5,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from motor.politica import Decision, EstadoMascota, InstantaneaUso, MotorZenchi
+from motor.politica import Decision, EstadoMascota, InstantaneaUso, MotorZenchi, calcular_limite_dinamico
 
 
 def crear_motor() -> MotorZenchi:
@@ -105,3 +105,18 @@ def test_limite_de_app_no_bloquea_si_aun_queda_tiempo():
     decision = motor.decidir(uso)
     assert decision.bloqueado is False
     assert decision.requiere_reflexion is False
+
+
+def test_calculo_de_limite_dinamico_restringe_apps_adictivas():
+    limite_total, limite_app = calcular_limite_dinamico(
+        tiempo_total_hoy=1800,
+        tiempo_por_app={
+            "com.instagram.android": 1200,
+            "com.google.android.apps.messaging": 300,
+        },
+        paquete_actual="com.instagram.android",
+        limite_base_segundos=3600,
+        limite_base_app_segundos=1800,
+    )
+    assert limite_total <= 3600
+    assert limite_app < 1800
