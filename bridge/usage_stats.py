@@ -289,6 +289,23 @@ def detectar_app_en_primer_plano() -> AppState:
         paquete_home = None if home_resolve is None else str(home_resolve.activityInfo.packageName)
 
         try:
+            tareas = activity_manager.getRunningTasks(1)
+            if tareas is not None and tareas.size() > 0:
+                tarea_superior = tareas.get(0)
+                componente = getattr(tarea_superior, "topActivity", None)
+                if componente is not None:
+                    paquete_activo = str(componente.getPackageName())
+                    if paquete_activo:
+                        print(f"[DEBUG] App en primer plano (RunningTasks): {paquete_activo}")
+                        return AppState(
+                            paquete_en_primer_plano=paquete_activo,
+                            tiempo_desde_ultimo_cambio_ms=0,
+                            timestamp_ultimo_cambio=ahora_ms,
+                        )
+        except Exception:
+            pass
+
+        try:
             procesos = activity_manager.getRunningAppProcesses()
             if procesos is not None:
                 for proceso in procesos:
@@ -297,35 +314,14 @@ def detectar_app_en_primer_plano() -> AppState:
                         continue
                     for paquete in pkg_list:
                         nombre_pkg = str(paquete)
-                        if not nombre_pkg:
-                            continue
-                        if paquete_home and nombre_pkg == paquete_home:
-                            continue
                         importancia = getattr(proceso, "importance", None)
-                        if importancia is not None and importancia <= 200:
+                        if nombre_pkg and importancia is not None and importancia <= 200:
                             print(f"[DEBUG] App en primer plano (RunningAppProcesses): {nombre_pkg}")
                             return AppState(
                                 paquete_en_primer_plano=nombre_pkg,
                                 tiempo_desde_ultimo_cambio_ms=0,
                                 timestamp_ultimo_cambio=ahora_ms,
                             )
-        except Exception:
-            pass
-
-        try:
-            tareas = activity_manager.getRunningTasks(1)
-            if tareas is not None and tareas.size() > 0:
-                tarea_superior = tareas.get(0)
-                componente = getattr(tarea_superior, "topActivity", None)
-                if componente is not None:
-                    paquete_activo = str(componente.getPackageName())
-                    if paquete_activo and (paquete_home is None or paquete_activo != paquete_home):
-                        print(f"[DEBUG] App en primer plano (RunningTasks): {paquete_activo}")
-                        return AppState(
-                            paquete_en_primer_plano=paquete_activo,
-                            tiempo_desde_ultimo_cambio_ms=0,
-                            timestamp_ultimo_cambio=ahora_ms,
-                        )
         except Exception:
             pass
 
@@ -342,15 +338,28 @@ def detectar_app_en_primer_plano() -> AppState:
                 ultimo_evento = UsageEvents.Event()
                 paquete_activo = None
                 ultimo_timestamp = 0
+                ultimo_tipo = None
                 while eventos.hasNextEvent():
                     eventos.getNextEvent(ultimo_evento)
-                    if ultimo_evento.getEventType() == UsageEvents.Event.MOVE_TO_FOREGROUND:
+                    tipo_evento = ultimo_evento.getEventType()
+                    if tipo_evento in (
+                        UsageEvents.Event.MOVE_TO_FOREGROUND,
+                        UsageEvents.Event.MOVE_TO_BACKGROUND,
+                    ):
                         paquete = str(ultimo_evento.getPackageName())
                         tiempo = int(ultimo_evento.getTimeStamp())
-                        if paquete and (paquete_home is None or paquete != paquete_home):
+                        if paquete:
                             ultimo_timestamp = tiempo
                             paquete_activo = paquete
+                            ultimo_tipo = tipo_evento
                 if paquete_activo:
+                    if ultimo_tipo == UsageEvents.Event.MOVE_TO_BACKGROUND:
+                        print(f"[DEBUG] UsoStats events -> sin app activa (último cierre: {paquete_activo})")
+                        return AppState(
+                            paquete_en_primer_plano=None,
+                            tiempo_desde_ultimo_cambio_ms=ahora_ms - ultimo_timestamp,
+                            timestamp_ultimo_cambio=ultimo_timestamp,
+                        )
                     print(f"[DEBUG] UsoStats events -> {paquete_activo} (último evento: {ultimo_timestamp})")
                     return AppState(
                         paquete_en_primer_plano=paquete_activo,

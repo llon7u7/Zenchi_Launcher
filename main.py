@@ -621,30 +621,11 @@ class ZenchiApp(App):
         estado_app = detectar_app_en_primer_plano()
         paquete_detectado = estado_app.paquete_en_primer_plano
 
-        if self.ultima_app_abierta and self.ultima_app_abierta != self._obtener_paquete_zenchi():
-            if paquete_detectado is None or paquete_detectado == self._obtener_paquete_zenchi():
-                # No hubo confirmación del sistema; seguimos contando la última app abierta.
-                if self.app_en_primer_plano != self.ultima_app_abierta:
-                    self.app_en_primer_plano = self.ultima_app_abierta
-                    self._inicio_tiempo_app_actual = time()
-                if self.app_en_primer_plano:
-                    tiempo_aplicado = self.cache_tiempos_por_app.get(self.app_en_primer_plano, 0)
-                    if self._inicio_tiempo_app_actual is not None:
-                        tiempo_aplicado += max(0, int(time() - self._inicio_tiempo_app_actual))
-                    self.cache_tiempos_por_app[self.app_en_primer_plano] = tiempo_aplicado
-                    self.tiempo_acumulado_hoy = sum(self.cache_tiempos_por_app.values())
-                    self.segundos_usados = self.tiempo_acumulado_hoy
-                    self._guardar_estado_diario()
-                    nombre_app = self.app_en_primer_plano.split('.')[-1]
-                    if hasattr(self, "etiqueta_app_activa"):
-                        self.etiqueta_app_activa.text = f"App: {nombre_app} | Tiempo: {tiempo_aplicado}s"
-                    self.tiempo_app_actual = tiempo_aplicado
-                    return
-
         if not paquete_detectado:
             if self.app_en_primer_plano:
                 self._finalizar_tiempo_app_actual()
                 self.app_en_primer_plano = ""
+            self.ultima_app_abierta = None
             self.paquete_restringido_actual = None
             self.tiempo_app_actual = 0
             if hasattr(self, "etiqueta_app_activa"):
@@ -669,6 +650,7 @@ class ZenchiApp(App):
         if self.app_en_primer_plano == self._obtener_paquete_zenchi():
             self._finalizar_tiempo_app_actual()
             self.app_en_primer_plano = ""
+            self.ultima_app_abierta = None
             self.paquete_restringido_actual = None
             self.tiempo_app_actual = 0
             if hasattr(self, "etiqueta_app_activa"):
