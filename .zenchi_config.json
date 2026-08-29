@@ -1,0 +1,13 @@
+{
+  "apps_adictivas": [
+    "com.facebook.katana",
+    "com.google.android.youtube",
+    "com.instagram.android",
+    "com.reddit.frontpage",
+    "com.tiktok.android",
+    "com.twitter.android"
+  ],
+  "limites_personalizados": {
+    "com.ejemplo.correo": 1200
+  }
+}

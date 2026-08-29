@@ -23,8 +23,10 @@ from kivy.uix.boxlayout import BoxLayout
 from kivy.uix.button import Button
 from kivy.uix.gridlayout import GridLayout
 from kivy.uix.label import Label
+from kivy.uix.popup import Popup
 from kivy.uix.progressbar import ProgressBar
 from kivy.uix.scrollview import ScrollView
+from kivy.uix.textinput import TextInput
 
 from motor.politica import EstadoMascota, InstantaneaUso, MotorZenchi, calcular_limite_dinamico
 from bridge.servicios_android import (
@@ -61,6 +63,15 @@ class ZenchiApp(App):
     paquete_restringido_actual = None
     apps_bloqueadas_hoy = set()
     _inicio_tiempo_app_actual = None
+    apps_adictivas = {
+        "com.instagram.android",
+        "com.google.android.youtube",
+        "com.tiktok.android",
+        "com.twitter.android",
+        "com.reddit.frontpage",
+        "com.facebook.katana",
+    }
+    limites_personalizados = {}
 
     def _ruta_estado_diario(self) -> Path:
         return Path(__file__).resolve().parent / ".zenchi_estado_diario.json"
@@ -124,6 +135,35 @@ class ZenchiApp(App):
 
         self._inicio_tiempo_app_actual = None
 
+    def _ruta_configuracion(self) -> Path:
+        return Path(__file__).resolve().parent / ".zenchi_config.json"
+
+    def _cargar_configuracion(self) -> None:
+        ruta = self._ruta_configuracion()
+        if not ruta.exists():
+            self.apps_adictivas = set(self.apps_adictivas)
+            self.limites_personalizados = dict(self.limites_personalizados)
+            return
+
+        try:
+            with ruta.open("r", encoding="utf-8") as archivo:
+                datos = json.load(archivo)
+            if isinstance(datos, dict):
+                self.apps_adictivas = set(datos.get("apps_adictivas", self.apps_adictivas))
+                self.limites_personalizados = {str(k): int(v) for k, v in datos.get("limites_personalizados", {}).items()}
+        except Exception:
+            self.apps_adictivas = set(self.apps_adictivas)
+            self.limites_personalizados = dict(self.limites_personalizados)
+
+    def _guardar_configuracion(self) -> None:
+        ruta = self._ruta_configuracion()
+        payload = {
+            "apps_adictivas": sorted(self.apps_adictivas),
+            "limites_personalizados": {str(k): int(v) for k, v in self.limites_personalizados.items()},
+        }
+        with ruta.open("w", encoding="utf-8") as archivo:
+            json.dump(payload, archivo, ensure_ascii=False, indent=2)
+
     def _obtener_limites_dinamicos(self) -> tuple[int, int]:
         """Devuelve el límite diario y por app según la historia del usuario."""
         limite_diario, limite_app = calcular_limite_dinamico(
@@ -132,6 +172,8 @@ class ZenchiApp(App):
             paquete_actual=self.app_en_primer_plano or None,
             limite_base_segundos=int(self.limite_segundos),
             limite_base_app_segundos=int(self.limite_segundos_por_app),
+            apps_adictivas=set(self.apps_adictivas),
+            limites_personalizados=dict(self.limites_personalizados),
         )
         return limite_diario, limite_app
 
@@ -172,6 +214,7 @@ class ZenchiApp(App):
         self.tiempo_acumulado_hoy = int(estado_guardado.get("tiempo_total", 0))
         self.cache_tiempos_por_app = {str(k): int(v) for k, v in estado_guardado.get("tiempo_por_app", {}).items()}
         self.apps_bloqueadas_hoy = set(estado_guardado.get("apps_bloqueadas", []))
+        self._cargar_configuracion()
 
         self._reiniciar_si_nuevo_dia()
 
@@ -230,6 +273,61 @@ class ZenchiApp(App):
 
         return raiz
 
+    def _guardar_limite_para_paquete(self, paquete: str, nombre: str, minutos: int, popup: Popup | None = None) -> None:
+        if not paquete:
+            return
+        try:
+            minutos = max(5, int(minutos))
+        except (TypeError, ValueError):
+            minutos = 30
+
+        self.limites_personalizados[paquete] = minutos * 60
+        self._guardar_configuracion()
+        self.etiqueta_estado.text = f"Límite ajustado para {nombre}: {minutos} minutos."
+        if popup is not None:
+            popup.dismiss()
+
+    def _mostrar_menu_limite_app(self, paquete: str, nombre: str) -> None:
+        if not paquete:
+            return
+
+        contenedor = BoxLayout(orientation="vertical", spacing=dp(10), padding=dp(15))
+        etiqueta = Label(text=f"Ajustar límite para\n{nombre}", halign="center", valign="middle")
+        etiqueta.text_size = (dp(220), None)
+        contenedor.add_widget(etiqueta)
+
+        entrada = TextInput(
+            text=str(max(5, int((self.limites_personalizados.get(paquete, 0) or self.limite_segundos_por_app) / 60))),
+            multiline=False,
+            input_filter="int",
+            hint_text="Minutos",
+            size_hint_y=None,
+            height=dp(40),
+        )
+        contenedor.add_widget(entrada)
+
+        fila_preset = BoxLayout(spacing=dp(8), size_hint_y=None, height=dp(40))
+        for minutos in (10, 20, 30, 60):
+            boton_preset = Button(text=f"{minutos}m")
+            boton_preset.bind(on_release=lambda _btn, valor=minutos, popup=None: self._guardar_limite_para_paquete(paquete, nombre, valor, popup))
+            fila_preset.add_widget(boton_preset)
+        contenedor.add_widget(fila_preset)
+
+        boton_guardar = Button(text="Guardar límite")
+        boton_guardar.bind(on_release=lambda _btn: self._guardar_limite_para_paquete(paquete, nombre, entrada.text, popup))
+        contenedor.add_widget(boton_guardar)
+
+        boton_cancelar = Button(text="Cancelar")
+        boton_cancelar.bind(on_release=lambda _btn: popup.dismiss())
+        contenedor.add_widget(boton_cancelar)
+
+        popup = Popup(title="Límite de la app", content=contenedor, size_hint=(0.8, 0.5), auto_dismiss=True)
+        boton_guardar.bind(on_release=lambda _btn: self._guardar_limite_para_paquete(paquete, nombre, entrada.text, popup))
+        boton_cancelar.bind(on_release=lambda _btn: popup.dismiss())
+        for child in fila_preset.children[:]:
+            child.bind(on_release=lambda _btn, valor=child.text.rstrip("m"), p=popup: self._guardar_limite_para_paquete(paquete, nombre, valor, p))
+        popup.open()
+
     def _al_pedir_ser_launcher(self, *_args):
         print("[DEBUG] Solicitando ser launcher predeterminado...")
         solicitar_ser_launcher_predeterminado()
@@ -268,10 +366,33 @@ class ZenchiApp(App):
                 size_hint_y=None,
                 height=dp(70),
             )
-            # Al abrir una app, se empieza a acumular tiempo automáticamente
-            boton_app.bind(
-                on_release=lambda _boton, paquete=app.paquete, nombre=app.nombre: self._al_abrir_app(paquete, nombre)
-            )
+
+            def _abrir_si_no_esta_bloqueado(_boton, paquete=app.paquete, nombre=app.nombre):
+                if getattr(_boton, "_zenchi_menu_abierto", False):
+                    _boton._zenchi_menu_abierto = False
+                    return
+                self._al_abrir_app(paquete, nombre)
+
+            def _iniciar_long_press(instance, touch):
+                if instance.collide_point(*touch.pos):
+                    instance._zenchi_long_press = Clock.schedule_once(
+                        lambda _dt, paquete=app.paquete, nombre=app.nombre: (
+                            setattr(instance, "_zenchi_menu_abierto", True),
+                            self._mostrar_menu_limite_app(paquete, nombre),
+                        ),
+                        0.8,
+                    )
+                return False
+
+            def _cancelar_long_press(instance, touch):
+                if hasattr(instance, "_zenchi_long_press"):
+                    Clock.unschedule(instance._zenchi_long_press)
+                    delattr(instance, "_zenchi_long_press")
+                return False
+
+            boton_app.bind(on_release=_abrir_si_no_esta_bloqueado)
+            boton_app.bind(on_touch_down=_iniciar_long_press)
+            boton_app.bind(on_touch_up=_cancelar_long_press)
             self.grilla_apps.add_widget(boton_app)
 
     def _al_abrir_app(self, paquete: str, nombre: str):

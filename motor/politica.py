@@ -78,6 +78,8 @@ def calcular_limite_dinamico(
     paquete_actual: str | None,
     limite_base_segundos: int = 60 * 60,
     limite_base_app_segundos: int = 30 * 60,
+    apps_adictivas: set[str] | None = None,
+    limites_personalizados: dict[str, int] | None = None,
 ) -> tuple[int, int]:
     """Calcula un límite diario y por app según el patrón real del usuario.
 
@@ -85,13 +87,27 @@ def calcular_limite_dinamico(
     Si la persona está usando varias apps, se deja algo más de margen a las menos
     adictivas y se endurece el total general.
     """
+    if apps_adictivas is None:
+        apps_adictivas = {
+            "com.instagram.android",
+            "com.zhiliao.musically",
+            "com.google.android.youtube",
+            "com.reddit.frontpage",
+            "com.twitter.android",
+            "com.facebook.katana",
+            "com.snapchat.android",
+            "com.tiktok.android",
+        }
+
+    if limites_personalizados is None:
+        limites_personalizados = {}
+
     if not tiempo_por_app:
         return limite_base_segundos, limite_base_app_segundos
 
     total = max(sum(tiempo_por_app.values()), 1)
     app_actual = tiempo_por_app.get(paquete_actual, 0) if paquete_actual else 0
 
-    # Riesgo por concentración de uso en una sola app.
     if total > 0:
         proporcion_app = app_actual / total
     else:
@@ -108,23 +124,15 @@ def calcular_limite_dinamico(
     else:
         factor_app = 1.0
 
-    apps_adictivas = {
-        "com.instagram.android",
-        "com.zhiliao.musically",
-        "com.google.android.youtube",
-        "com.reddit.frontpage",
-        "com.twitter.android",
-        "com.facebook.katana",
-        "com.snapchat.android",
-        "com.tiktok.android",
-    }
     if paquete_actual and paquete_actual in apps_adictivas:
         factor_app *= 0.8
 
-    limite_app = int(limite_base_app_segundos * factor_app)
-    limite_app = max(300, min(5400, limite_app))
+    if paquete_actual and paquete_actual in limites_personalizados:
+        limite_app = int(limites_personalizados[paquete_actual])
+    else:
+        limite_app = int(limite_base_app_segundos * factor_app)
+        limite_app = max(300, min(5400, limite_app))
 
-    # Si el usuario ya está acumulando mucho uso global, se reduce el total diario.
     proporcion_total = min(1.0, tiempo_total_hoy / max(limite_base_segundos, 1))
     if proporcion_total >= 0.8:
         factor_total = 0.8
