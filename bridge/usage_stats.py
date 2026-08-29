@@ -252,10 +252,10 @@ def obtener_estadisticas_uso(rango_horas: int = 24) -> list[EstadisticaUso]:
 def detectar_app_en_primer_plano() -> AppState:
     """Detecta qué aplicación está realmente en primer plano.
 
-    Prioriza ActivityManager porque `lastTimeUsed` de UsageStats puede
-    devolver apps que ya no están activas si el usuario regresó al launcher o
-    cerró una actividad. El conteo debe detenerse cuando el usuario vuelve al
-    home, no seguir sumando la app previa.
+    Primero intenta ActivityManager y procesos activos. Si el sistema no devuelve
+    un resultado fiable, usa UsageStats para buscar la app más reciente en primer
+    plano. Esto evita que la UI quede en "--" cuando el launcher no responde
+    bien a getRunningTasks() en versiones modernas de Android.
     """
     actividad = _obtener_actividad()
 
@@ -272,50 +272,94 @@ def detectar_app_en_primer_plano() -> AppState:
     try:
         Context = autoclass("android.content.Context")
         ActivityManager = autoclass("android.app.ActivityManager")
+        UsageStatsManager = autoclass("android.app.usage.UsageStatsManager")
+        UsageEvents = autoclass("android.app.usage.UsageEvents")
+        PackageManager = autoclass("android.content.pm.PackageManager")
+        Intent = autoclass("android.content.Intent")
+
         activity_manager = cast(
             "android.app.ActivityManager",
             actividad.getSystemService(Context.ACTIVITY_SERVICE),
         )
+        pm = actividad.getPackageManager()
 
-        tareas = activity_manager.getRunningTasks(1)
-        if tareas is not None and tareas.size() > 0:
-            tarea_superior = tareas.get(0)
-            componente = tarea_superior.topActivity
-            paquete_activo = str(componente.getPackageName())
+        home_intent = Intent(Intent.ACTION_MAIN)
+        home_intent.addCategory(Intent.CATEGORY_HOME)
+        home_resolve = pm.resolveActivity(home_intent, PackageManager.MATCH_DEFAULT_ONLY)
+        paquete_home = None if home_resolve is None else str(home_resolve.activityInfo.packageName)
 
-            Intent = autoclass("android.content.Intent")
-            PackageManager = autoclass("android.content.pm.PackageManager")
-            pm = actividad.getPackageManager()
-            intent_home = Intent(Intent.ACTION_MAIN)
-            intent_home.addCategory(Intent.CATEGORY_HOME)
-            resolucion_home = pm.resolveActivity(intent_home, PackageManager.MATCH_DEFAULT_ONLY)
-            paquete_home = None if resolucion_home is None else str(resolucion_home.activityInfo.packageName)
+        try:
+            procesos = activity_manager.getRunningAppProcesses()
+            if procesos is not None:
+                for proceso in procesos:
+                    pkg_list = getattr(proceso, "pkgList", None)
+                    if not pkg_list:
+                        continue
+                    for paquete in pkg_list:
+                        nombre_pkg = str(paquete)
+                        if not nombre_pkg:
+                            continue
+                        if paquete_home and nombre_pkg == paquete_home:
+                            continue
+                        importancia = getattr(proceso, "importance", None)
+                        if importancia is not None and importancia <= 200:
+                            print(f"[DEBUG] App en primer plano (RunningAppProcesses): {nombre_pkg}")
+                            return AppState(
+                                paquete_en_primer_plano=nombre_pkg,
+                                tiempo_desde_ultimo_cambio_ms=0,
+                                timestamp_ultimo_cambio=ahora_ms,
+                            )
+        except Exception:
+            pass
 
-            if paquete_home and paquete_activo == paquete_home:
-                print(f"[DEBUG] El usuario volvió al launcher ({paquete_activo}); no contar tiempo.")
-                return AppState(
-                    paquete_en_primer_plano=None,
-                    tiempo_desde_ultimo_cambio_ms=0,
-                    timestamp_ultimo_cambio=ahora_ms,
-                )
+        try:
+            tareas = activity_manager.getRunningTasks(1)
+            if tareas is not None and tareas.size() > 0:
+                tarea_superior = tareas.get(0)
+                componente = getattr(tarea_superior, "topActivity", None)
+                if componente is not None:
+                    paquete_activo = str(componente.getPackageName())
+                    if paquete_activo and (paquete_home is None or paquete_activo != paquete_home):
+                        print(f"[DEBUG] App en primer plano (RunningTasks): {paquete_activo}")
+                        return AppState(
+                            paquete_en_primer_plano=paquete_activo,
+                            tiempo_desde_ultimo_cambio_ms=0,
+                            timestamp_ultimo_cambio=ahora_ms,
+                        )
+        except Exception:
+            pass
 
-            if paquete_activo:
-                print(f"[DEBUG] App en primer plano (ActivityManager): {paquete_activo}")
-                return AppState(
-                    paquete_en_primer_plano=paquete_activo,
-                    tiempo_desde_ultimo_cambio_ms=0,
-                    timestamp_ultimo_cambio=ahora_ms,
-                )
-
-        # Fallback seguro: solo usar UsageStats si coincide con la tarea actual,
-        # no si quedó como "última app usada" porque el usuario ya volvió al home.
-        UsageStatsManager = autoclass("android.app.usage.UsageStatsManager")
         usage_stats_manager = cast(
             "android.app.usage.UsageStatsManager",
             actividad.getSystemService(Context.USAGE_STATS_SERVICE),
         )
 
         inicio_ms = ahora_ms - (24 * 60 * 60 * 1000)
+
+        try:
+            eventos = usage_stats_manager.queryEvents(inicio_ms, ahora_ms)
+            if eventos is not None:
+                ultimo_evento = UsageEvents.Event()
+                paquete_activo = None
+                ultimo_timestamp = 0
+                while eventos.hasNextEvent():
+                    eventos.getNextEvent(ultimo_evento)
+                    if ultimo_evento.getEventType() == UsageEvents.Event.MOVE_TO_FOREGROUND:
+                        paquete = str(ultimo_evento.getPackageName())
+                        tiempo = int(ultimo_evento.getTimeStamp())
+                        if paquete and (paquete_home is None or paquete != paquete_home):
+                            ultimo_timestamp = tiempo
+                            paquete_activo = paquete
+                if paquete_activo:
+                    print(f"[DEBUG] UsoStats events -> {paquete_activo} (último evento: {ultimo_timestamp})")
+                    return AppState(
+                        paquete_en_primer_plano=paquete_activo,
+                        tiempo_desde_ultimo_cambio_ms=ahora_ms - ultimo_timestamp,
+                        timestamp_ultimo_cambio=ultimo_timestamp,
+                    )
+        except Exception:
+            pass
+
         stats = usage_stats_manager.queryUsageStats(
             UsageStatsManager.INTERVAL_BEST,
             inicio_ms,
@@ -329,9 +373,10 @@ def detectar_app_en_primer_plano() -> AppState:
             for i in range(stats.size()):
                 usage_stat = stats.get(i)
                 ultima_vez = int(usage_stat.getLastTimeUsed())
-                if ultima_vez > ultimo_timestamp:
+                paquete = str(usage_stat.getPackageName())
+                if ultima_vez > ultimo_timestamp and paquete and (paquete_home is None or paquete != paquete_home):
                     ultimo_timestamp = ultima_vez
-                    paquete_activo = str(usage_stat.getPackageName())
+                    paquete_activo = paquete
 
             if paquete_activo:
                 print(f"[DEBUG] UsoStats fallback -> {paquete_activo} (último uso hace {ahora_ms - ultimo_timestamp}ms)")
