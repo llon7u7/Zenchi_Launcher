@@ -6,7 +6,7 @@ source.dir = .
 source.include_exts = py,kv,png,jpg,json
 source.exclude_dirs = .venv,.venv311,__pycache__,bin,.git
 version = 0.1.0
-requirements = python3,kivy==2.3.0,kivymd==1.2.0,pyjnius==1.6.1
+requirements = python3,kivy,kivymd,pyjnius
 orientation = portrait
 fullscreen = 0
 
