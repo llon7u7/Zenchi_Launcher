@@ -281,11 +281,11 @@ def detectar_app_en_primer_plano() -> AppState:
             actividad.getSystemService(Context.USAGE_STATS_SERVICE)
         )
         
-        # Ventana de consulta: última hora para eventos, último día para stats
-        inicio_eventos_ms = ahora_ms - (60 * 60 * 1000)  # 1 hora
+        # Ventana de consulta: últimos 2 minutos para eventos (más inmediato)
+        inicio_eventos_ms = ahora_ms - (2 * 60 * 1000)  # 2 minutos
         inicio_stats_ms = ahora_ms - (24 * 60 * 60 * 1000)  # 24 horas
         
-        # MÉTODO 1: Buscar eventos MOVE_TO_FOREGROUND
+        # MÉTODO 1: Buscar eventos MOVE_TO_FOREGROUND recientes
         eventos = usage_stats_manager.queryEvents(inicio_eventos_ms, ahora_ms)
         
         if eventos is not None and eventos.hasNextEvent():
@@ -309,8 +309,8 @@ def detectar_app_en_primer_plano() -> AppState:
             if ultimo_evento_foreground:
                 tiempo_transcurrido = ahora_ms - timestamp_ultimo_foreground
                 
-                # Umbral más generoso: 10 minutos para considerar app activa
-                if tiempo_transcurrido < 600000:  # 10 minutos
+                # Umbral amplio: 2 minutos para considerar app activa por eventos
+                if tiempo_transcurrido < 120000:  # 2 minutos
                     print(f"[DEBUG] App en primer plano (UsageEvents): {ultimo_evento_foreground} (hace {tiempo_transcurrido}ms)")
                     
                     return AppState(
@@ -319,11 +319,9 @@ def detectar_app_en_primer_plano() -> AppState:
                         timestamp_ultimo_cambio=timestamp_ultimo_foreground
                     )
                 else:
-                    print(f"[DEBUG] Último evento foreground fue hace {tiempo_transcurrido}ms")
+                    print(f"[DEBUG] Último evento foreground fue hace {tiempo_transcurrido}ms, usando fallback")
         
-        # MÉTODO 2: Fallback con queryUsageStats - buscar la app con mayor tiempo reciente
-        print("[DEBUG] Usando fallback con UsageStats")
-        
+        # MÉTODO 2: Fallback con queryUsageStats - buscar la app más reciente
         stats = usage_stats_manager.queryUsageStats(
             UsageStatsManager.INTERVAL_BEST,
             inicio_stats_ms,
@@ -346,25 +344,15 @@ def detectar_app_en_primer_plano() -> AppState:
             if paquete_activo:
                 tiempo_transcurrido = ahora_ms - ultimo_timestamp
                 
-                # Umbral más generoso: 5 minutos para fallback
-                if tiempo_transcurrido < 300000:  # 5 minutos
-                    print(f"[DEBUG] App en primer plano (UsageStats): {paquete_activo} (hace {tiempo_transcurrido}ms)")
-                    
-                    return AppState(
-                        paquete_en_primer_plano=paquete_activo,
-                        tiempo_desde_ultimo_cambio_ms=tiempo_transcurrido,
-                        timestamp_ultimo_cambio=ultimo_timestamp
-                    )
-                else:
-                    # Si pasó más tiempo, aún retornamos la app más reciente
-                    # pero con advertencia (mejor que retornar None)
-                    print(f"[DEBUG] App más reciente (hace {tiempo_transcurrido}ms): {paquete_activo}")
-                    
-                    return AppState(
-                        paquete_en_primer_plano=paquete_activo,
-                        tiempo_desde_ultimo_cambio_ms=tiempo_transcurrido,
-                        timestamp_ultimo_cambio=ultimo_timestamp
-                    )
+                # Siempre retornamos la app más reciente encontrada
+                # Esto asegura que siempre haya una app detectada al abrir
+                print(f"[DEBUG] App más reciente: {paquete_activo} (hace {tiempo_transcurrido}ms)")
+                
+                return AppState(
+                    paquete_en_primer_plano=paquete_activo,
+                    tiempo_desde_ultimo_cambio_ms=tiempo_transcurrido,
+                    timestamp_ultimo_cambio=ultimo_timestamp
+                )
         
         # MÉTODO 3: ActivityManager como último recurso
         ActivityManager = autoclass("android.app.ActivityManager")
