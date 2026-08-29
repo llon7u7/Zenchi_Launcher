@@ -367,32 +367,40 @@ class ZenchiApp(App):
                 height=dp(70),
             )
 
-            def _abrir_si_no_esta_bloqueado(_boton, paquete=app.paquete, nombre=app.nombre):
-                if getattr(_boton, "_zenchi_menu_abierto", False):
-                    _boton._zenchi_menu_abierto = False
-                    return
-                self._al_abrir_app(paquete, nombre)
+            def _on_touch_down(instance, touch):
+                if not instance.collide_point(*touch.pos):
+                    return False
+                if hasattr(instance, "_zenchi_long_press"):
+                    Clock.unschedule(instance._zenchi_long_press)
+                instance._zenchi_long_press = Clock.schedule_once(
+                    lambda _dt, paquete=app.paquete, nombre=app.nombre: (
+                        setattr(instance, "_zenchi_menu_abierto", True),
+                        self._mostrar_menu_limite_app(paquete, nombre),
+                    ),
+                    0.8,
+                )
+                return True
 
-            def _iniciar_long_press(instance, touch):
-                if instance.collide_point(*touch.pos):
-                    instance._zenchi_long_press = Clock.schedule_once(
-                        lambda _dt, paquete=app.paquete, nombre=app.nombre: (
-                            setattr(instance, "_zenchi_menu_abierto", True),
-                            self._mostrar_menu_limite_app(paquete, nombre),
-                        ),
-                        0.8,
-                    )
-                return False
-
-            def _cancelar_long_press(instance, touch):
+            def _on_touch_move(instance, touch):
                 if hasattr(instance, "_zenchi_long_press"):
                     Clock.unschedule(instance._zenchi_long_press)
                     delattr(instance, "_zenchi_long_press")
                 return False
 
-            boton_app.bind(on_release=_abrir_si_no_esta_bloqueado)
-            boton_app.bind(on_touch_down=_iniciar_long_press)
-            boton_app.bind(on_touch_up=_cancelar_long_press)
+            def _on_touch_up(instance, touch):
+                if getattr(instance, "_zenchi_menu_abierto", False):
+                    instance._zenchi_menu_abierto = False
+                    return True
+                if hasattr(instance, "_zenchi_long_press"):
+                    Clock.unschedule(instance._zenchi_long_press)
+                    delattr(instance, "_zenchi_long_press")
+                if instance.collide_point(*touch.pos):
+                    self._al_abrir_app(app.paquete, app.nombre)
+                return True
+
+            boton_app.bind(on_touch_down=_on_touch_down)
+            boton_app.bind(on_touch_move=_on_touch_move)
+            boton_app.bind(on_touch_up=_on_touch_up)
             self.grilla_apps.add_widget(boton_app)
 
     def _al_abrir_app(self, paquete: str, nombre: str):
