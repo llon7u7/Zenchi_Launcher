@@ -1,6 +1,10 @@
-# Compiled and build artifacts
-*.pyc
+# Python
 __pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Compiled and build artifacts
 *.o
 *.obj
 *.class
@@ -13,6 +17,7 @@ __pycache__/
 # Dependencies
 .venv/
 venv/
+env/
 node_modules/
 .mypy_cache/
 .pytest_cache/
@@ -20,12 +25,15 @@ dist/
 build/
 target/
 .gradle/
+pip-log.txt
+pip-selfcheck.json
 
 # Logs and temp files
 *.log
 *.tmp
 *.swp
 *.swo
+*~
 
 # Environment
 .env
@@ -35,8 +43,6 @@ target/
 # Editors
 .vscode/
 .idea/
-*.swp
-*.swo
 
 # System files
 .DS_Store
