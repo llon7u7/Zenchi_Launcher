@@ -433,6 +433,9 @@ class ZenchiApp(App):
 
         self.ultima_app_abierta = paquete
         self._tiempo_ultima_apertura = time()
+        self.app_en_primer_plano = paquete
+        self._inicio_tiempo_app_actual = time()
+        self.tiempo_app_actual = 0
         self.etiqueta_estado.text = f"Abriendo {nombre}..."
         print(f"[DEBUG] Abriendo app: {nombre} ({paquete})")
         print(f"[DEBUG] Tiempo acumulado antes de abrir: {self.tiempo_acumulado_hoy}s")
@@ -453,6 +456,76 @@ class ZenchiApp(App):
         segundos_restantes = self.tiempo_acumulado_hoy % 60
         limite_minutos = self.limite_segundos // 60
         self.etiqueta_estado.text = f"Uso hoy: {minutos}m {segundos_restantes}s / {limite_minutos}m"
+
+    def _formatear_tiempo_segundos(self, segundos: int) -> str:
+        segundos = max(0, int(segundos))
+        horas = segundos // 3600
+        minutos = (segundos % 3600) // 60
+        segundos_restantes = segundos % 60
+
+        if horas > 0:
+            return f"{horas}h {minutos}m"
+        if minutos > 0:
+            return f"{minutos}m {segundos_restantes}s"
+        return f"{segundos_restantes}s"
+
+    def _actualizar_notificacion_uso(self) -> None:
+        """Muestra una notificación Android con progreso de uso diario."""
+        try:
+            import sys
+            if sys.platform.startswith("win"):
+                return
+
+            from jnius import autoclass, cast
+
+            actividad = _obtener_actividad()
+            if actividad is None:
+                return
+
+            Context = autoclass("android.content.Context")
+            NotificationManager = autoclass("android.app.NotificationManager")
+            Build = autoclass("android.os.Build")
+            R_drawable = autoclass("android.R$drawable")
+            NotificationCompat = autoclass("androidx.core.app.NotificationCompat")
+
+            notification_manager = cast(
+                "android.app.NotificationManager",
+                actividad.getSystemService(Context.NOTIFICATION_SERVICE),
+            )
+
+            channel_id = "zenchi_usage_channel"
+            if int(Build.VERSION.SDK_INT) >= 26:
+                channel = autoclass("android.app.NotificationChannel")
+                notification_channel = channel(channel_id, "Zenchi", notification_manager.IMPORTANCE_LOW)
+                notification_channel.setDescription("Uso diario y tiempo restante")
+                notification_manager.createNotificationChannel(notification_channel)
+                builder = NotificationCompat.Builder(actividad, channel_id)
+            else:
+                builder = NotificationCompat.Builder(actividad)
+
+            limite_total = max(1, int(self.limite_segundos))
+            tiempo_usado = int(self.tiempo_acumulado_hoy)
+            restante = max(0, limite_total - tiempo_usado)
+            progreso = min(100, max(0, int((tiempo_usado / limite_total) * 100)))
+
+            nombre_app = self.app_en_primer_plano.split('.')[-1] if self.app_en_primer_plano else "Zenchi"
+            if self.app_en_primer_plano:
+                texto = f"{nombre_app}: {self._formatear_tiempo_segundos(tiempo_usado)} usado · quedan {self._formatear_tiempo_segundos(restante)}"
+            else:
+                texto = f"Sin app activa · {self._formatear_tiempo_segundos(tiempo_usado)} usado hoy"
+
+            builder.setSmallIcon(R_drawable.stat_notify_chat)
+            builder.setContentTitle("Zenchi")
+            builder.setContentText(texto)
+            builder.setProgress(100, progreso, False)
+            builder.setOnlyAlertOnce(True)
+            builder.setOngoing(True)
+            builder.setPriority(NotificationCompat.PRIORITY_LOW)
+
+            notification = builder.build()
+            notification_manager.notify(1001, notification)
+        except Exception as exc:
+            print(f"[DEBUG] No se pudo actualizar la notificación de uso: {exc}")
 
     def _al_iniciar_sesion(self, *_args):
         self.sesion_activa = True
@@ -480,6 +553,23 @@ class ZenchiApp(App):
         estado_app = detectar_app_en_primer_plano()
 
         if not estado_app.paquete_en_primer_plano:
+            if self.app_en_primer_plano and self.ultima_app_abierta == self.app_en_primer_plano:
+                # Android puede tardar un momento en reflejar la app recién abierta.
+                # Mientras la app abierta siga siendo la última lanzada, seguimos contando.
+                if self._inicio_tiempo_app_actual is None:
+                    self._inicio_tiempo_app_actual = time()
+                tiempo_acumulado = self.cache_tiempos_por_app.get(self.app_en_primer_plano, 0)
+                tiempo_acumulado += max(0, int(time() - self._inicio_tiempo_app_actual))
+                self.cache_tiempos_por_app[self.app_en_primer_plano] = tiempo_acumulado
+                self.tiempo_acumulado_hoy = sum(self.cache_tiempos_por_app.values())
+                self.segundos_usados = self.tiempo_acumulado_hoy
+                self._guardar_estado_diario()
+                nombre_app = self.app_en_primer_plano.split('.')[-1]
+                if hasattr(self, "etiqueta_app_activa"):
+                    self.etiqueta_app_activa.text = f"App: {nombre_app} | Tiempo: {tiempo_acumulado}s"
+                self.tiempo_app_actual = tiempo_acumulado
+                return
+
             if self.app_en_primer_plano:
                 self._finalizar_tiempo_app_actual()
                 self.app_en_primer_plano = ""
@@ -574,6 +664,7 @@ class ZenchiApp(App):
             else:
                 self.etiqueta_estado.text = "Acceso bloqueado por la política configurada."
 
+        self._actualizar_notificacion_uso()
         self._guardar_estado_diario()
 
 
