@@ -545,31 +545,35 @@ class ZenchiApp(App):
             print("[DEBUG] Permiso UsageStats ya concedido")
 
     def _actualizar_monitoreo_apps(self):
-        """Actualiza el estado de la app en primer plano usando timestamps reales."""
+        """Actualiza el seguimiento de la app activa con un modelo más robusto para launcher Android."""
         self._reiniciar_si_nuevo_dia()
 
         from time import time
 
         estado_app = detectar_app_en_primer_plano()
+        paquete_detectado = estado_app.paquete_en_primer_plano
 
-        if not estado_app.paquete_en_primer_plano:
-            if self.app_en_primer_plano and self.ultima_app_abierta == self.app_en_primer_plano:
-                # Android puede tardar un momento en reflejar la app recién abierta.
-                # Mientras la app abierta siga siendo la última lanzada, seguimos contando.
-                if self._inicio_tiempo_app_actual is None:
+        if self.ultima_app_abierta and self.ultima_app_abierta != self._obtener_paquete_zenchi():
+            if paquete_detectado is None or paquete_detectado == self._obtener_paquete_zenchi():
+                # No hubo confirmación del sistema; seguimos contando la última app abierta.
+                if self.app_en_primer_plano != self.ultima_app_abierta:
+                    self.app_en_primer_plano = self.ultima_app_abierta
                     self._inicio_tiempo_app_actual = time()
-                tiempo_acumulado = self.cache_tiempos_por_app.get(self.app_en_primer_plano, 0)
-                tiempo_acumulado += max(0, int(time() - self._inicio_tiempo_app_actual))
-                self.cache_tiempos_por_app[self.app_en_primer_plano] = tiempo_acumulado
-                self.tiempo_acumulado_hoy = sum(self.cache_tiempos_por_app.values())
-                self.segundos_usados = self.tiempo_acumulado_hoy
-                self._guardar_estado_diario()
-                nombre_app = self.app_en_primer_plano.split('.')[-1]
-                if hasattr(self, "etiqueta_app_activa"):
-                    self.etiqueta_app_activa.text = f"App: {nombre_app} | Tiempo: {tiempo_acumulado}s"
-                self.tiempo_app_actual = tiempo_acumulado
-                return
+                if self.app_en_primer_plano:
+                    tiempo_aplicado = self.cache_tiempos_por_app.get(self.app_en_primer_plano, 0)
+                    if self._inicio_tiempo_app_actual is not None:
+                        tiempo_aplicado += max(0, int(time() - self._inicio_tiempo_app_actual))
+                    self.cache_tiempos_por_app[self.app_en_primer_plano] = tiempo_aplicado
+                    self.tiempo_acumulado_hoy = sum(self.cache_tiempos_por_app.values())
+                    self.segundos_usados = self.tiempo_acumulado_hoy
+                    self._guardar_estado_diario()
+                    nombre_app = self.app_en_primer_plano.split('.')[-1]
+                    if hasattr(self, "etiqueta_app_activa"):
+                        self.etiqueta_app_activa.text = f"App: {nombre_app} | Tiempo: {tiempo_aplicado}s"
+                    self.tiempo_app_actual = tiempo_aplicado
+                    return
 
+        if not paquete_detectado:
             if self.app_en_primer_plano:
                 self._finalizar_tiempo_app_actual()
                 self.app_en_primer_plano = ""
@@ -579,7 +583,7 @@ class ZenchiApp(App):
                 self.etiqueta_app_activa.text = "App activa: --"
             return
 
-        paquete = estado_app.paquete_en_primer_plano
+        paquete = paquete_detectado
 
         if paquete in self.apps_bloqueadas_hoy:
             self._cerrar_app_actual()
