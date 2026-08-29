@@ -252,6 +252,9 @@ def obtener_estadisticas_uso(rango_horas: int = 24) -> list[EstadisticaUso]:
 def detectar_app_en_primer_plano() -> AppState:
     """Detecta qué aplicación está actualmente en primer plano.
     
+    Usa queryUsageStats para obtener la app con el último tiempo de uso más reciente.
+    Este método es más confiable y responde inmediatamente al abrir la interfaz.
+    
     Returns:
         AppState con el paquete de la app activa y metadata temporal.
     """
@@ -265,20 +268,21 @@ def detectar_app_en_primer_plano() -> AppState:
             timestamp_ultimo_cambio=int(datetime.now().timestamp() * 1000) - 300000
         )
     
+    ahora_ms = int(datetime.now().timestamp() * 1000)
+    
     try:
         Context = autoclass("android.content.Context")
         UsageStatsManager = autoclass("android.app.usage.UsageStatsManager")
-        ActivityManager = autoclass("android.app.ActivityManager")
         
-        # Método 1: Usar UsageStatsManager para apps recientes
         usage_stats_manager = cast(
             "android.app.usage.UsageStatsManager",
             actividad.getSystemService(Context.USAGE_STATS_SERVICE)
         )
         
-        ahora_ms = int(datetime.now().timestamp() * 1000)
-        inicio_ms = ahora_ms - (60 * 60 * 1000)  # Última hora
+        # Ventana de consulta: últimas 24 horas
+        inicio_ms = ahora_ms - (24 * 60 * 60 * 1000)
         
+        # Obtener estadísticas de uso
         stats = usage_stats_manager.queryUsageStats(
             UsageStatsManager.INTERVAL_BEST,
             inicio_ms,
@@ -286,7 +290,7 @@ def detectar_app_en_primer_plano() -> AppState:
         )
         
         if stats is not None and stats.size() > 0:
-            # La app con el último tiempo de uso es probablemente la que está en primer plano
+            # Encontrar la app con el último tiempo de uso más reciente
             ultimo_timestamp = 0
             paquete_activo = None
             
@@ -309,7 +313,8 @@ def detectar_app_en_primer_plano() -> AppState:
                     timestamp_ultimo_cambio=ultimo_timestamp
                 )
         
-        # Método 2: Fallback con ActivityManager (Android < 5.0)
+        # Fallback: ActivityManager
+        ActivityManager = autoclass("android.app.ActivityManager")
         activity_manager = cast(
             "android.app.ActivityManager",
             actividad.getSystemService(Context.ACTIVITY_SERVICE)
@@ -319,7 +324,7 @@ def detectar_app_en_primer_plano() -> AppState:
         if tareas is not None and tareas.size() > 0:
             tarea_superior = tareas.get(0)
             componente = tarea_superior.topActivity
-            paquete_activo = str(componento.getPackageName())
+            paquete_activo = str(componente.getPackageName())
             
             print(f"[DEBUG] App en primer plano (ActivityManager): {paquete_activo}")
             
@@ -344,7 +349,7 @@ def detectar_app_en_primer_plano() -> AppState:
         return AppState(
             paquete_en_primer_plano=None,
             tiempo_desde_ultimo_cambio_ms=0,
-            timestamp_ultimo_cambio=int(datetime.now().timestamp() * 1000)
+            timestamp_ultimo_cambio=ahora_ms
         )
 
 
