@@ -24,6 +24,7 @@ from kivy.uix.scrollview import ScrollView
 
 from motor.politica import EstadoMascota, InstantaneaUso, MotorZenchi
 from bridge.servicios_android import (
+    _obtener_actividad,
     abrir_app,
     es_launcher_predeterminado,
     listar_apps_instaladas,
@@ -130,7 +131,13 @@ class ZenchiApp(App):
 
     def _al_abrir_app(self, paquete: str, nombre: str):
         """Maneja la apertura de apps y el tracking de tiempo de uso."""
-        # Verificar si ya alcanzó el límite antes de permitir abrir
+        # Lista blanca: Zenchi nunca se bloquea a sí mismo
+        if paquete == self._obtener_paquete_zenchi():
+            print(f"[DEBUG] Abriendo Zenchi (lista blanca)")
+            abrir_app(paquete)
+            return
+        
+        # Verificar si ya alcanzó el límite antes de permitir abrir otras apps
         if self.tiempo_acumulado_hoy >= self.limite_segundos:
             self.etiqueta_estado.text = "⚠️ Límite diario alcanzado. No puedes abrir más apps hoy."
             self.estado_mascota = EstadoMascota.ENOJADO.value
@@ -146,6 +153,14 @@ class ZenchiApp(App):
         
         # Abrir la app real
         abrir_app(paquete)
+
+    def _obtener_paquete_zenchi(self) -> str:
+        """Obtiene el nombre del paquete de Zenchi para la lista blanca."""
+        actividad = _obtener_actividad()
+        if actividad is not None:
+            return str(actividad.getPackageName())
+        # Fallback para desktop
+        return "org.test.zenchi"
 
     def _al_ver_uso_acumulado(self, *_args):
         """Muestra el tiempo acumulado del día."""
