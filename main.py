@@ -669,6 +669,7 @@ class ZenchiApp(App):
         if self.app_en_primer_plano == self._obtener_paquete_zenchi():
             self._finalizar_tiempo_app_actual()
             self.app_en_primer_plano = ""
+            self.paquete_restringido_actual = None
             self.tiempo_app_actual = 0
             if hasattr(self, "etiqueta_app_activa"):
                 self.etiqueta_app_activa.text = "App activa: --"
@@ -694,11 +695,7 @@ class ZenchiApp(App):
             self.etiqueta_app_activa.text = f"App: {nombre_app} | Tiempo: {tiempo_acumulado}s"
         self.tiempo_app_actual = tiempo_acumulado
 
-        if tiempo_acumulado > 300:
-            self.paquete_restringido_actual = self.app_en_primer_plano
-            print(f"[WARNING] App {self.app_en_primer_plano} superó límite de sesión")
-        else:
-            self.paquete_restringido_actual = None
+        self.paquete_restringido_actual = None
 
     def _actualizar(self, _dt):
         self._reiniciar_si_nuevo_dia()

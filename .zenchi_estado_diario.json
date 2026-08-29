@@ -5,6 +5,7 @@
     "com.instagram.android": 316
   },
   "apps_bloqueadas": [
+    "com.ejemplo.camara",
     "com.ejemplo.mensajes",
     "com.instagram.android"
   ]

@@ -8,6 +8,7 @@
     "com.twitter.android"
   ],
   "limites_personalizados": {
-    "com.ejemplo.correo": 1200
+    "com.ejemplo.correo": 1200,
+    "com.ejemplo.camara": 600
   }
 }
