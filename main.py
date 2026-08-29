@@ -533,6 +533,72 @@ class ZenchiApp(App):
         self.etiqueta_estado.text = "Sesión de enfoque activa."
         print("[DEBUG] Sesión de enfoque iniciada")
 
+    def _tiene_permiso_sobreposicion(self) -> bool:
+        actividad = _obtener_actividad()
+        if actividad is None:
+            return True
+        try:
+            from jnius import autoclass
+            Settings = autoclass("android.provider.Settings")
+            return Settings.canDrawOverlays(actividad)
+        except Exception:
+            return False
+
+    def _solicitar_permiso_sobreposicion(self) -> None:
+        actividad = _obtener_actividad()
+        if actividad is None:
+            return
+        try:
+            from jnius import autoclass
+            Settings = autoclass("android.provider.Settings")
+            Intent = autoclass("android.content.Intent")
+            intent = Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION)
+            actividad.startActivity(intent)
+            print("[INFO] Solicitando permiso de superposición sobre otras apps")
+        except Exception as exc:
+            print(f"[ERROR] No se pudo abrir la solicitud de superposición: {exc}")
+
+    def _tiene_permiso_notificaciones(self) -> bool:
+        actividad = _obtener_actividad()
+        if actividad is None:
+            return True
+        try:
+            from jnius import autoclass, cast
+            Build = autoclass("android.os.Build")
+            Context = autoclass("android.content.Context")
+            if int(Build.VERSION.SDK_INT) < 33:
+                return True
+            NotificationManager = autoclass("android.app.NotificationManager")
+            manager = cast("android.app.NotificationManager", actividad.getSystemService(Context.NOTIFICATION_SERVICE))
+            return bool(manager.areNotificationsEnabled())
+        except Exception:
+            return False
+
+    def _solicitar_permiso_notificaciones(self) -> None:
+        actividad = _obtener_actividad()
+        if actividad is None:
+            return
+        try:
+            from jnius import autoclass
+            Build = autoclass("android.os.Build")
+            Settings = autoclass("android.provider.Settings")
+            Intent = autoclass("android.content.Intent")
+            if int(Build.VERSION.SDK_INT) >= 33:
+                intent = Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS)
+                intent.putExtra("android.provider.extra.APP_PACKAGE", actividad.getPackageName())
+                actividad.startActivity(intent)
+                print("[INFO] Solicitando permiso de notificaciones")
+        except Exception as exc:
+            print(f"[ERROR] No se pudo abrir la solicitud de notificaciones: {exc}")
+
+    def _solicitar_permisos_android(self, *_args):
+        if not self._tiene_permiso_sobreposicion():
+            self._solicitar_permiso_sobreposicion()
+        if not self._tiene_permiso_notificaciones():
+            self._solicitar_permiso_notificaciones()
+        if not obtener_permiso_usage_stats():
+            solicitar_permiso_usage_stats()
+
     def _verificar_permiso_usage_stats(self, *_args):
         """Verifica y solicita permiso UsageStats si es necesario."""
         print("[DEBUG] Verificando permiso UsageStats...")
@@ -543,6 +609,8 @@ class ZenchiApp(App):
             solicitar_permiso_usage_stats()
         else:
             print("[DEBUG] Permiso UsageStats ya concedido")
+
+        self._solicitar_permisos_android()
 
     def _actualizar_monitoreo_apps(self):
         """Actualiza el seguimiento de la app activa con un modelo más robusto para launcher Android."""

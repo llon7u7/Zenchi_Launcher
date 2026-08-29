@@ -67,6 +67,20 @@ def test_paquete_restringido_bloquea_sin_importar_el_uso():
     assert decision.requiere_reflexion is True
 
 
+def test_paquete_restringido_no_bloquea_si_el_limite_de_esa_app_no_se_alcanzo():
+    motor = crear_motor()
+    uso = InstantaneaUso(
+        segundos_usados=1200,
+        limite_diario_segundos=3600,
+        paquete_restringido="com.ejemplo.bloqueada",
+        segundos_usados_por_app=300,
+        limite_app_segundos=900,
+    )
+    decision = motor.decidir(uso)
+    assert decision.bloqueado is False
+    assert decision.requiere_reflexion is False
+
+
 def test_reflexion_completa_ya_no_vuelve_a_pedirla():
     motor = crear_motor()
     uso = InstantaneaUso(

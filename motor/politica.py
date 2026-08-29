@@ -171,7 +171,10 @@ class MotorZenchi:
                 motivo="limite_app_alcanzado",
             )
 
-        bloqueado = proporcion >= 1.0 or uso.paquete_restringido is not None
+        bloqueado = proporcion >= 1.0
+        if uso.paquete_restringido is not None and uso.limite_app_segundos > 0:
+            bloqueado = bloqueado or uso.segundos_usados_por_app >= uso.limite_app_segundos
+
         requiere_reflexion = bloqueado and not uso.reflexion_completa
 
         if requiere_reflexion:

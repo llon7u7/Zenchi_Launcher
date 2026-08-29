@@ -8,6 +8,10 @@
     <!-- Permiso para acceder a estadísticas de uso de apps -->
     <uses-permission android:name="android.permission.PACKAGE_USAGE_STATS" 
         tools:ignore="ProtectedPermissions" />
+
+    <!-- Permisos requeridos para bloquear apps desde el launcher -->
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     
     <!-- Permiso para ser launcher (pantalla de inicio) -->
     <uses-permission android:name="android.permission.SET_WALLPAPER" />
