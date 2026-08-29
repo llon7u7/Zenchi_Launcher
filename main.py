@@ -134,7 +134,10 @@ class ZenchiApp(App):
         # Lista blanca: Zenchi nunca se bloquea a sí mismo
         if paquete == self._obtener_paquete_zenchi():
             print(f"[DEBUG] Abriendo Zenchi (lista blanca)")
-            abrir_app(paquete)
+            # Cuando vuelves a Zenchi, pausar el contador
+            self.app_en_uso = False
+            self.ultima_app_abierta = None
+            self.etiqueta_estado.text = "Bienvenido a Zenchi"
             return
         
         # Verificar si ya alcanzó el límite antes de permitir abrir otras apps
@@ -144,10 +147,10 @@ class ZenchiApp(App):
             self.etiqueta_mascota.text = f"[ {EstadoMascota.ENOJADO.value} ]"
             return
         
-        # Abrir la app y empezar a trackear el tiempo
+        # Abrir la app y empezar a trackear el tiempo automáticamente
         self.app_en_uso = True
         self.ultima_app_abierta = paquete
-        self.etiqueta_estado.text = f"Usando {nombre}..."
+        self.etiqueta_estado.text = f"Usando {nombre}... (tiempo acumulándose)"
         print(f"[DEBUG] Abriendo app: {nombre} ({paquete})")
         print(f"[DEBUG] Tiempo acumulado hoy: {self.tiempo_acumulado_hoy}s")
         
