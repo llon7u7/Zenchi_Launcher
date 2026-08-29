@@ -78,3 +78,30 @@ def test_reflexion_completa_ya_no_vuelve_a_pedirla():
     decision = motor.decidir(uso)
     assert decision.bloqueado is True
     assert decision.requiere_reflexion is False
+
+
+def test_limite_de_app_bloquea_cuando_se_alcanza_el_tope():
+    motor = crear_motor()
+    uso = InstantaneaUso(
+        segundos_usados=1800,
+        limite_diario_segundos=3600,
+        segundos_usados_por_app=900,
+        limite_app_segundos=900,
+    )
+    decision = motor.decidir(uso)
+    assert decision.bloqueado is True
+    assert decision.requiere_reflexion is True
+    assert decision.motivo == "limite_app_alcanzado"
+
+
+def test_limite_de_app_no_bloquea_si_aun_queda_tiempo():
+    motor = crear_motor()
+    uso = InstantaneaUso(
+        segundos_usados=1800,
+        limite_diario_segundos=3600,
+        segundos_usados_por_app=600,
+        limite_app_segundos=900,
+    )
+    decision = motor.decidir(uso)
+    assert decision.bloqueado is False
+    assert decision.requiere_reflexion is False

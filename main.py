@@ -10,6 +10,10 @@ del desarrollador visual. Este backend ya maneja:
 - Control de tiempo de uso con la mascota Zenchi
 """
 
+from datetime import date
+import json
+from pathlib import Path
+
 from kivy.config import Config; Config.set('graphics', 'width', '360'); Config.set('graphics', 'height', '740')
 from kivy.app import App
 from kivy.clock import Clock
@@ -41,11 +45,13 @@ class ZenchiApp(App):
     # --- Datos que la interfaz puede leer/mostrar ---
     segundos_usados = NumericProperty(0)
     limite_segundos = NumericProperty(60 * 60)       # límite diario: 1 hora
+    limite_segundos_por_app = NumericProperty(30 * 60)
     estado_mascota = StringProperty(EstadoMascota.OCIOSO.value)
     tiempo_acumulado_hoy = 0  # Tiempo total usado hoy (persistente)
+    dia_actual = ""
     ultima_app_abierta = None  # Paquete de la última app abierta
     _tiempo_ultima_apertura = None  # Timestamp cuando se abrió la última app
-    sesion_activa = False
+    sesion_activa = True
 
     # --- Monitoreo de uso por app ---
     app_en_primer_plano = StringProperty("")
@@ -53,10 +59,93 @@ class ZenchiApp(App):
     tiene_permiso_usage_stats = False
     cache_tiempos_por_app = {}  # {paquete: segundos_acumulados}
     paquete_restringido_actual = None
+    apps_bloqueadas_hoy = set()
+
+    def _ruta_estado_diario(self) -> Path:
+        return Path(__file__).resolve().parent / ".zenchi_estado_diario.json"
+
+    def _cargar_estado_diario(self) -> dict:
+        ruta = self._ruta_estado_diario()
+        if not ruta.exists():
+            return {"fecha": date.today().isoformat(), "tiempo_total": 0, "tiempo_por_app": {}, "apps_bloqueadas": []}
+
+        try:
+            with ruta.open("r", encoding="utf-8") as archivo:
+                datos = json.load(archivo)
+                if not isinstance(datos, dict):
+                    raise ValueError("Estado inválido")
+                return datos
+        except Exception:
+            return {"fecha": date.today().isoformat(), "tiempo_total": 0, "tiempo_por_app": {}, "apps_bloqueadas": []}
+
+    def _guardar_estado_diario(self) -> None:
+        ruta = self._ruta_estado_diario()
+        payload = {
+            "fecha": self.dia_actual,
+            "tiempo_total": int(self.tiempo_acumulado_hoy),
+            "tiempo_por_app": {str(k): int(v) for k, v in self.cache_tiempos_por_app.items()},
+            "apps_bloqueadas": sorted(self.apps_bloqueadas_hoy),
+        }
+        with ruta.open("w", encoding="utf-8") as archivo:
+            json.dump(payload, archivo, ensure_ascii=False, indent=2)
+
+    def _reiniciar_si_nuevo_dia(self) -> None:
+        hoy = date.today().isoformat()
+        if self.dia_actual == hoy:
+            return
+
+        self.dia_actual = hoy
+        self.tiempo_acumulado_hoy = 0
+        self.segundos_usados = 0
+        self.cache_tiempos_por_app = {}
+        self.apps_bloqueadas_hoy = set()
+        self.paquete_restringido_actual = None
+        self.ultima_app_abierta = None
+        self._tiempo_ultima_apertura = None
+        self.app_en_primer_plano = ""
+        if hasattr(self, "etiqueta_estado"):
+            self.etiqueta_estado.text = "Nuevo día: Zenchi reinició sus límites."
+        self._guardar_estado_diario()
+
+    def _cerrar_app_actual(self) -> None:
+        if not self.app_en_primer_plano:
+            return
+
+        self.paquete_restringido_actual = self.app_en_primer_plano
+        self.apps_bloqueadas_hoy.add(self.app_en_primer_plano)
+        if hasattr(self, "etiqueta_estado"):
+            self.etiqueta_estado.text = f"{self.app_en_primer_plano} alcanzó su límite y quedó bloqueada hasta mañana."
+        self.estado_mascota = EstadoMascota.ENOJADO.value
+        if hasattr(self, "etiqueta_mascota"):
+            self.etiqueta_mascota.text = f"[ {EstadoMascota.ENOJADO.value} ]"
+
+        try:
+            from bridge.servicios_android import _obtener_actividad
+            actividad = _obtener_actividad()
+            if actividad is not None:
+                from jnius import autoclass
+                Intent = autoclass("android.content.Intent")
+                intent = Intent(Intent.ACTION_MAIN)
+                intent.addCategory(Intent.CATEGORY_HOME)
+                intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                actividad.startActivity(intent)
+        except Exception as exc:
+            print(f"[ERROR] No se pudo devolver al launcher: {exc}")
+
+        self._guardar_estado_diario()
 
     def build(self):
         self.title = "Zenchi"
         self.motor = MotorZenchi()
+        self.dia_actual = date.today().isoformat()
+
+        estado_guardado = self._cargar_estado_diario()
+        self.dia_actual = estado_guardado.get("fecha", self.dia_actual)
+        self.tiempo_acumulado_hoy = int(estado_guardado.get("tiempo_total", 0))
+        self.cache_tiempos_por_app = {str(k): int(v) for k, v in estado_guardado.get("tiempo_por_app", {}).items()}
+        self.apps_bloqueadas_hoy = set(estado_guardado.get("apps_bloqueadas", []))
+
+        self._reiniciar_si_nuevo_dia()
 
         raiz = BoxLayout(orientation="vertical", padding=dp(20), spacing=dp(15))
 
@@ -79,9 +168,6 @@ class ZenchiApp(App):
         raiz.add_widget(self.barra_progreso)
 
         botones = BoxLayout(spacing=dp(10), size_hint_y=None, height=dp(50))
-        boton_iniciar = Button(text="Iniciar sesión de enfoque")
-        boton_iniciar.bind(on_release=self._al_iniciar_sesion)
-        botones.add_widget(boton_iniciar)
 
         # Botón para verificar permisos UsageStats
         boton_permiso = Button(text="Verificar permiso UsageStats")
@@ -89,6 +175,9 @@ class ZenchiApp(App):
         botones.add_widget(boton_permiso)
 
         raiz.add_widget(botones)
+
+        self.sesion_activa = True
+        self._reiniciar_si_nuevo_dia()
 
         # --- Convertirse en launcher predeterminado ---
         self.boton_launcher = Button(
@@ -161,37 +250,36 @@ class ZenchiApp(App):
         """Maneja la apertura de apps y el tracking de tiempo de uso."""
         from time import time
 
+        self._reiniciar_si_nuevo_dia()
+
+        if paquete in self.apps_bloqueadas_hoy:
+            self.etiqueta_estado.text = f"{nombre} está bloqueada hasta mañana."
+            self.estado_mascota = EstadoMascota.ENOJADO.value
+            self.etiqueta_mascota.text = f"[ {EstadoMascota.ENOJADO.value} ]"
+            return
+
         # Lista blanca: Zenchi nunca se bloquea a sí mismo
         if paquete == self._obtener_paquete_zenchi():
             print(f"[DEBUG] Volviendo a Zenchi (lista blanca)")
-            # Cuando vuelves a Zenchi, calcular el tiempo usado en la app anterior
-            if self.ultima_app_abierta and self._tiempo_ultima_apertura:
-                tiempo_usado = int(time() - self._tiempo_ultima_apertura)
-                self.tiempo_acumulado_hoy += tiempo_usado
-                print(f"[DEBUG] Tiempo usado en {self.ultima_app_abierta}: {tiempo_usado}s")
-                print(f"[DEBUG] Nuevo acumulado: {self.tiempo_acumulado_hoy}s")
-
-            # Resetear estado
             self.ultima_app_abierta = None
             self._tiempo_ultima_apertura = None
             self.etiqueta_estado.text = "Bienvenido a Zenchi"
             return
 
-        # Verificar si ya alcanzó el límite antes de permitir abrir otras apps
         if self.tiempo_acumulado_hoy >= self.limite_segundos:
             self.etiqueta_estado.text = "⚠️ Límite diario alcanzado. No puedes abrir más apps hoy."
             self.estado_mascota = EstadoMascota.ENOJADO.value
             self.etiqueta_mascota.text = f"[ {EstadoMascota.ENOJADO.value} ]"
+            self.apps_bloqueadas_hoy.add(paquete)
+            self._guardar_estado_diario()
             return
 
-        # Registrar el momento de apertura y comenzar a trackear
         self.ultima_app_abierta = paquete
         self._tiempo_ultima_apertura = time()
         self.etiqueta_estado.text = f"Abriendo {nombre}..."
         print(f"[DEBUG] Abriendo app: {nombre} ({paquete})")
         print(f"[DEBUG] Tiempo acumulado antes de abrir: {self.tiempo_acumulado_hoy}s")
 
-        # Abrir la app real
         abrir_app(paquete)
 
     def _obtener_paquete_zenchi(self) -> str:
@@ -211,6 +299,7 @@ class ZenchiApp(App):
 
     def _al_iniciar_sesion(self, *_args):
         self.sesion_activa = True
+        self._reiniciar_si_nuevo_dia()
         self.etiqueta_estado.text = "Sesión de enfoque activa."
         print("[DEBUG] Sesión de enfoque iniciada")
 
@@ -227,63 +316,71 @@ class ZenchiApp(App):
 
     def _actualizar_monitoreo_apps(self):
         """Actualiza el estado de la app en primer plano y acumula tiempo."""
-        if not self.sesion_activa:
-            return
+        self._reiniciar_si_nuevo_dia()
 
-        # Detectar app en primer plano
         estado_app = detectar_app_en_primer_plano()
 
         if estado_app.paquete_en_primer_plano:
-            # Si cambió la app en primer plano
-            if self.app_en_primer_plano != estado_app.paquete_en_primer_plano:
-                self.app_en_primer_plano = estado_app.paquete_en_primer_plano
+            paquete = estado_app.paquete_en_primer_plano
+
+            if paquete in self.apps_bloqueadas_hoy:
+                self._cerrar_app_actual()
+                return
+
+            if self.app_en_primer_plano != paquete:
+                self.app_en_primer_plano = paquete
                 self.tiempo_app_actual = 0
                 print(f"[DEBUG] Nueva app en primer plano: {self.app_en_primer_plano}")
 
-            # Acumular tiempo para esta app
             from bridge.usage_stats import acumular_tiempo_sesion
             self.cache_tiempos_por_app = acumular_tiempo_sesion(
                 self.app_en_primer_plano,
-                1,  # acumulamos 1 segundo por tick
-                self.cache_tiempos_por_app
+                1,
+                self.cache_tiempos_por_app,
             )
+            self.tiempo_acumulado_hoy = sum(self.cache_tiempos_por_app.values())
+            self.segundos_usados = self.tiempo_acumulado_hoy
+            self._guardar_estado_diario()
 
-            # Actualizar UI
-            nombre_app = self.app_en_primer_plano.split('.')[-1]  # Mostrar solo última parte del paquete
+            if self.app_en_primer_plano != self._obtener_paquete_zenchi() and self.cache_tiempos_por_app.get(self.app_en_primer_plano, 0) >= self.limite_segundos_por_app:
+                self.apps_bloqueadas_hoy.add(self.app_en_primer_plano)
+                self.paquete_restringido_actual = self.app_en_primer_plano
+                self._cerrar_app_actual()
+                return
+
+            nombre_app = self.app_en_primer_plano.split('.')[-1]
             tiempo_acumulado = self.cache_tiempos_por_app.get(self.app_en_primer_plano, 0)
-            self.etiqueta_app_activa.text = f"App: {nombre_app} | Tiempo: {tiempo_acumulado}s"
+            if hasattr(self, "etiqueta_app_activa"):
+                self.etiqueta_app_activa.text = f"App: {nombre_app} | Tiempo: {tiempo_acumulado}s"
             self.tiempo_app_actual = tiempo_acumulado
 
-            # Verificar si esta app tiene restricciones (ejemplo: si supera cierto límite)
-            # Esto se puede personalizar según políticas específicas por app
-            if tiempo_acumulado > 300:  # Más de 5 minutos en una sola app
+            if tiempo_acumulado > 300:
                 self.paquete_restringido_actual = self.app_en_primer_plano
                 print(f"[WARNING] App {self.app_en_primer_plano} superó límite de sesión")
             else:
                 self.paquete_restringido_actual = None
         else:
-            self.etiqueta_app_activa.text = "App activa: --"
+            if hasattr(self, "etiqueta_app_activa"):
+                self.etiqueta_app_activa.text = "App activa: --"
 
     def _actualizar(self, _dt):
+        self._reiniciar_si_nuevo_dia()
+
         if self.sesion_activa:
-            # 1. Actualizar monitoreo de apps
             self._actualizar_monitoreo_apps()
 
-            # 2. Avanza el tiempo usado global de la sesión de enfoque
-            self.segundos_usados = min(self.segundos_usados + 1, self.limite_segundos)
+        uso_total = int(self.tiempo_acumulado_hoy)
+        app_actual_segundos = self.cache_tiempos_por_app.get(self.app_en_primer_plano, 0)
 
-        # Considerar ambas fuentes de uso (sesión + acumulado por apertura de apps)
-        uso_total = max(int(self.segundos_usados), int(self.tiempo_acumulado_hoy))
-
-        # 3. Le preguntas al MOTOR qué debe pasar
         uso = InstantaneaUso(
             uso_total,
             int(self.limite_segundos),
             paquete_restringido=self.paquete_restringido_actual,
+            segundos_usados_por_app=app_actual_segundos,
+            limite_app_segundos=int(self.limite_segundos_por_app),
         )
         decision = self.motor.decidir(uso)
 
-        # 4. La interfaz solo se encarga de MOSTRAR lo que el motor decidió.
         self.estado_mascota = decision.estado.value
         self.etiqueta_mascota.text = f"[ {decision.estado.value} ]"
         self.barra_progreso.value = min(100, int(uso.proporcion_uso * 100))
@@ -291,10 +388,14 @@ class ZenchiApp(App):
         if decision.bloqueado:
             if decision.motivo == "reflexion_requerida":
                 self.etiqueta_estado.text = "Reflexión requerida antes de continuar."
+            elif decision.motivo == "limite_app_alcanzado":
+                self.etiqueta_estado.text = f"{self.app_en_primer_plano} bloqueada por límite diario."
             elif self.tiempo_acumulado_hoy >= self.limite_segundos:
                 self.etiqueta_estado.text = "⚠️ Límite diario alcanzado"
             else:
                 self.etiqueta_estado.text = "Acceso bloqueado por la política configurada."
+
+        self._guardar_estado_diario()
 
 
 if __name__ == "__main__":

@@ -41,6 +41,8 @@ class InstantaneaUso:
     limite_diario_segundos: int
     paquete_restringido: str | None = None
     reflexion_completa: bool = False
+    segundos_usados_por_app: int = 0
+    limite_app_segundos: int = 0
 
     @property
     def proporcion_uso(self) -> float:
@@ -77,6 +79,23 @@ class MotorZenchi:
 
     def decidir(self, uso: InstantaneaUso) -> Decision:
         proporcion = uso.proporcion_uso
+
+        if uso.limite_app_segundos > 0 and uso.segundos_usados_por_app >= uso.limite_app_segundos:
+            if not uso.reflexion_completa:
+                return Decision(
+                    estado=EstadoMascota.ENOJADO,
+                    bloqueado=True,
+                    requiere_reflexion=True,
+                    motivo="limite_app_alcanzado",
+                )
+
+            return Decision(
+                estado=EstadoMascota.ENOJADO,
+                bloqueado=True,
+                requiere_reflexion=False,
+                motivo="limite_app_alcanzado",
+            )
+
         bloqueado = proporcion >= 1.0 or uso.paquete_restringido is not None
         requiere_reflexion = bloqueado and not uso.reflexion_completa
 
