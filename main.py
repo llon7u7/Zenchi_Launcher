@@ -36,7 +36,9 @@ class ZenchiApp(App):
     segundos_usados = NumericProperty(0)
     limite_segundos = NumericProperty(60 * 60)       # límite diario: 1 hora
     estado_mascota = StringProperty(EstadoMascota.OCIOSO.value)
-    sesion_activa = False
+    app_en_uso = False  # Trackea si hay una app abierta actualmente
+    tiempo_acumulado_hoy = 0  # Tiempo total usado hoy (persistente)
+    ultima_app_abierta = None  # Paquete de la última app abierta
 
     def build(self):
         self.title = "Zenchi"
@@ -54,8 +56,8 @@ class ZenchiApp(App):
         raiz.add_widget(self.barra_progreso)
 
         botones = BoxLayout(spacing=dp(10), size_hint_y=None, height=dp(50))
-        boton_iniciar = Button(text="Iniciar sesión de enfoque")
-        boton_iniciar.bind(on_release=self._al_iniciar_sesion)
+        boton_iniciar = Button(text="Ver uso acumulado")
+        boton_iniciar.bind(on_release=self._al_ver_uso_acumulado)
         botones.add_widget(boton_iniciar)
         raiz.add_widget(botones)
 
@@ -120,33 +122,65 @@ class ZenchiApp(App):
                 size_hint_y=None,
                 height=dp(70),
             )
+            # Al abrir una app, se empieza a acumular tiempo automáticamente
             boton_app.bind(
-                on_release=lambda _boton, paquete=app.paquete: abrir_app(paquete)
+                on_release=lambda _boton, paquete=app.paquete, nombre=app.nombre: self._al_abrir_app(paquete, nombre)
             )
             self.grilla_apps.add_widget(boton_app)
 
-    def _al_iniciar_sesion(self, *_args):
-        self.sesion_activa = True
-        self.etiqueta_estado.text = "Sesión de enfoque activa."
+    def _al_abrir_app(self, paquete: str, nombre: str):
+        """Maneja la apertura de apps y el tracking de tiempo de uso."""
+        # Verificar si ya alcanzó el límite antes de permitir abrir
+        if self.tiempo_acumulado_hoy >= self.limite_segundos:
+            self.etiqueta_estado.text = "⚠️ Límite diario alcanzado. No puedes abrir más apps hoy."
+            self.estado_mascota = EstadoMascota.ENOJADO.value
+            self.etiqueta_mascota.text = f"[ {EstadoMascota.ENOJADO.value} ]"
+            return
+        
+        # Abrir la app y empezar a trackear el tiempo
+        self.app_en_uso = True
+        self.ultima_app_abierta = paquete
+        self.etiqueta_estado.text = f"Usando {nombre}..."
+        print(f"[DEBUG] Abriendo app: {nombre} ({paquete})")
+        print(f"[DEBUG] Tiempo acumulado hoy: {self.tiempo_acumulado_hoy}s")
+        
+        # Abrir la app real
+        abrir_app(paquete)
+
+    def _al_ver_uso_acumulado(self, *_args):
+        """Muestra el tiempo acumulado del día."""
+        minutos = self.tiempo_acumulado_hoy // 60
+        segundos_restantes = self.tiempo_acumulado_hoy % 60
+        limite_minutos = self.limite_segundos // 60
+        self.etiqueta_estado.text = f"Uso hoy: {minutos}m {segundos_restantes}s / {limite_minutos}m"
 
     def _actualizar(self, _dt):
-        if not self.sesion_activa:
+        # El tiempo se acumula automáticamente cuando hay una app en uso
+        # Como launcher, Zenchi trackea todo el tiempo de uso del dispositivo
+        if self.app_en_uso:
+            # Acumular tiempo solo si no ha alcanzado el límite
+            if self.tiempo_acumulado_hoy < self.limite_segundos:
+                self.tiempo_acumulado_hoy += 1
+                
+                # Actualizar la barra de progreso con el uso acumulado
+                proporcion = self.tiempo_acumulado_hoy / self.limite_segundos if self.limite_segundos > 0 else 1.0
+                self.barra_progreso.value = min(100, int(proporcion * 100))
+                
+                print(f"[DEBUG] Tiempo acumulado: {self.tiempo_acumulado_hoy}s / {self.limite_segundos}s")
+        
+        # Verificar si alcanzó el límite y bloquear
+        if self.tiempo_acumulado_hoy >= self.limite_segundos:
+            self.etiqueta_estado.text = "⚠️ Límite diario alcanzado"
+            self.estado_mascota = EstadoMascota.ENOJADO.value
+            self.etiqueta_mascota.text = f"[ {EstadoMascota.ENOJADO.value} ]"
             return
-
-        # 1. Avanza el tiempo usado
-        self.segundos_usados = min(self.segundos_usados + 1, self.limite_segundos)
-
-        # 2. Le preguntas al MOTOR qué debe pasar
-        uso = InstantaneaUso(int(self.segundos_usados), int(self.limite_segundos))
+        
+        # Actualizar estado de la mascota basado en el uso acumulado
+        uso = InstantaneaUso(int(self.tiempo_acumulado_hoy), int(self.limite_segundos))
         decision = self.motor.decidir(uso)
-
-        # 3. La interfaz solo se encarga de MOSTRAR lo que el motor decidió.
+        
         self.estado_mascota = decision.estado.value
         self.etiqueta_mascota.text = f"[ {decision.estado.value} ]"
-        self.barra_progreso.value = min(100, int(uso.proporcion_uso * 100))
-
-        if decision.bloqueado:
-            self.etiqueta_estado.text = "Acceso bloqueado por la política configurada."
 
 
 if __name__ == "__main__":
