@@ -7,11 +7,11 @@ El sistema anterior contaba tiempo de uso incluso cuando una app estaba en **seg
 2. No había verificación de eventos `MOVE_TO_BACKGROUND`
 3. La ventana de tiempo era muy amplia (1 hora)
 
-## Solución Implementada
+## Solución Propuesta
 
 ### Nuevo Algoritmo con `UsageEvents`
 
-Ahora el sistema usa **eventos en tiempo real** para detectar precisamente cuándo una app está en primer plano:
+Este documento describe el algoritmo propuesto para detectar precisamente cuándo una app está en primer plano:
 
 ```python
 # Método principal: Usar UsageEvents para eventos precisos
