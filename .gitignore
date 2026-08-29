@@ -1,10 +1,9 @@
 ```
-# Build artifacts
-build/
-
-# Dependencies
-.python-version
-.libs/
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
 
 # Logs and temp files
 *.log
@@ -15,29 +14,19 @@ build/
 .env.local
 *.env.*
 
-# Coverage
-.coverage
-coverage/
-htmlcov/
-
 # Editors
 .vscode/
 .idea/
+*.swp
+*.swo
 
-# Python
-__pycache__/
-*.pyc
-*.pyo
-*.pyd
-.Python
-*.so
-*.egg-info/
-.eggs/
+# Dependencies
+.venv/
+venv/
+node_modules/
 
-# OS
-.DS_Store
-Thumbs.db
-
-# Project specific
-bin/
+# Build artifacts
+dist/
+build/
+target/
 ```
