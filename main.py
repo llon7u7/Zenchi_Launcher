@@ -29,6 +29,58 @@ from kivy.uix.scrollview import ScrollView
 from kivy.uix.textinput import TextInput
 
 from motor.politica import EstadoMascota, InstantaneaUso, MotorZenchi, calcular_limite_dinamico
+
+
+class AppIconButton(Button):
+    def __init__(self, paquete="", nombre="", abrir_callback=None, long_press_callback=None, **kwargs):
+        super().__init__(**kwargs)
+        self.paquete = paquete
+        self.nombre = nombre
+        self.abrir_callback = abrir_callback
+        self.long_press_callback = long_press_callback
+        self.long_press_timer = None
+        self.long_press_triggered = False
+
+    def _cancelar_timer(self):
+        if self.long_press_timer is not None:
+            Clock.unschedule(self.long_press_timer)
+            self.long_press_timer = None
+
+    def _trigger_long_press(self, _dt=None):
+        self.long_press_triggered = True
+        if self.long_press_callback is not None:
+            self.long_press_callback(self.paquete, self.nombre)
+
+    def on_touch_down(self, touch):
+        if not self.collide_point(*touch.pos):
+            return super().on_touch_down(touch)
+
+        self._cancelar_timer()
+        self.long_press_timer = Clock.schedule_once(self._trigger_long_press, 0.8)
+        touch.grab(self)
+        return True
+
+    def on_touch_move(self, touch):
+        if touch.grab_current is self:
+            if not self.collide_point(*touch.pos):
+                self._cancelar_timer()
+                touch.ungrab(self)
+                return True
+            return True
+        return super().on_touch_move(touch)
+
+    def on_touch_up(self, touch):
+        if touch.grab_current is self:
+            touch.ungrab(self)
+            self._cancelar_timer()
+            if self.long_press_triggered:
+                self.long_press_triggered = False
+                return True
+            if self.collide_point(*touch.pos) and self.abrir_callback is not None:
+                self.abrir_callback(self.paquete, self.nombre)
+            return True
+        return super().on_touch_up(touch)
+
 from bridge.servicios_android import (
     _obtener_actividad,
     abrir_app,
@@ -361,46 +413,15 @@ class ZenchiApp(App):
         print(f"[DEBUG] Apps encontradas: {len(apps)}")
         for app in apps:
             print(f"[DEBUG] App: {app.nombre} ({app.paquete})")
-            boton_app = Button(
+            boton_app = AppIconButton(
                 text=app.nombre,
                 size_hint_y=None,
                 height=dp(70),
+                paquete=app.paquete,
+                nombre=app.nombre,
+                abrir_callback=self._al_abrir_app,
+                long_press_callback=self._mostrar_menu_limite_app,
             )
-
-            def _on_touch_down(instance, touch):
-                if not instance.collide_point(*touch.pos):
-                    return False
-                if hasattr(instance, "_zenchi_long_press"):
-                    Clock.unschedule(instance._zenchi_long_press)
-                instance._zenchi_long_press = Clock.schedule_once(
-                    lambda _dt, paquete=app.paquete, nombre=app.nombre: (
-                        setattr(instance, "_zenchi_menu_abierto", True),
-                        self._mostrar_menu_limite_app(paquete, nombre),
-                    ),
-                    0.8,
-                )
-                return True
-
-            def _on_touch_move(instance, touch):
-                if hasattr(instance, "_zenchi_long_press"):
-                    Clock.unschedule(instance._zenchi_long_press)
-                    delattr(instance, "_zenchi_long_press")
-                return False
-
-            def _on_touch_up(instance, touch):
-                if getattr(instance, "_zenchi_menu_abierto", False):
-                    instance._zenchi_menu_abierto = False
-                    return True
-                if hasattr(instance, "_zenchi_long_press"):
-                    Clock.unschedule(instance._zenchi_long_press)
-                    delattr(instance, "_zenchi_long_press")
-                if instance.collide_point(*touch.pos):
-                    self._al_abrir_app(app.paquete, app.nombre)
-                return True
-
-            boton_app.bind(on_touch_down=_on_touch_down)
-            boton_app.bind(on_touch_move=_on_touch_move)
-            boton_app.bind(on_touch_up=_on_touch_up)
             self.grilla_apps.add_widget(boton_app)
 
     def _al_abrir_app(self, paquete: str, nombre: str):
