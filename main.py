@@ -1,7 +1,13 @@
 """
 Punto de entrada de la app Zenchi.
 
-ACTUALIZACIÓN: Forzar refresh de lista de apps después de convertirse en launcher
+ACTUALIZACIÓN: Fix del bug donde al bloquear una app por límite, las demás
+apps quedaban bloqueadas también. La causa era que `_cerrar_app_actual`
+no limpiaba `app_en_primer_plano` / `ultima_app_abierta`, así que el
+"fallback" de `_actualizar_monitoreo_apps` seguía sumando tiempo fantasma
+a la app ya bloqueada (incluso estando en Home), inflando el total diario
+y disparando el bloqueo global sobre apps que nunca se usaron.
+
 Este archivo conecta el MOTOR (motor/politica.py) con Kivy.
 La parte de INTERFAZ (colores, layout, animaciones, estilo) es responsabilidad
 del desarrollador visual. Este backend ya maneja:
@@ -179,16 +185,37 @@ class ZenchiApp(App):
         return limite_diario, limite_app
 
     def _cerrar_app_actual(self) -> None:
+        """Bloquea la app actualmente en primer plano y detiene por completo
+        su rastreo.
+
+        IMPORTANTE: es crítico limpiar aquí `app_en_primer_plano`,
+        `ultima_app_abierta` e `_inicio_tiempo_app_actual`. Si no se hace,
+        el camino de "fallback" en `_actualizar_monitoreo_apps` sigue
+        sumándole tiempo a esta app indefinidamente (incluso con el
+        usuario ya en el launcher), lo que infla `tiempo_acumulado_hoy`
+        y termina bloqueando por error otras apps que nunca se usaron.
+        """
         if not self.app_en_primer_plano:
             return
 
-        self.paquete_restringido_actual = self.app_en_primer_plano
-        self.apps_bloqueadas_hoy.add(self.app_en_primer_plano)
+        paquete_bloqueado = self.app_en_primer_plano
+
+        self.paquete_restringido_actual = paquete_bloqueado
+        self.apps_bloqueadas_hoy.add(paquete_bloqueado)
         if hasattr(self, "etiqueta_estado"):
-            self.etiqueta_estado.text = f"{self.app_en_primer_plano} alcanzó su límite y quedó bloqueada hasta mañana."
+            self.etiqueta_estado.text = f"{paquete_bloqueado} alcanzó su límite y quedó bloqueada hasta mañana."
         self.estado_mascota = EstadoMascota.ENOJADO.value
         if hasattr(self, "etiqueta_mascota"):
             self.etiqueta_mascota.text = f"[ {EstadoMascota.ENOJADO.value} ]"
+
+        # --- Fix: detener todo rastreo de esta app ---
+        self.app_en_primer_plano = ""
+        self.ultima_app_abierta = None
+        self._inicio_tiempo_app_actual = None
+        self._tiempo_ultima_apertura = None
+        self.tiempo_app_actual = 0
+        if hasattr(self, "etiqueta_app_activa"):
+            self.etiqueta_app_activa.text = "App activa: --"
 
         try:
             from bridge.servicios_android import _obtener_actividad
@@ -620,9 +647,23 @@ class ZenchiApp(App):
 
         estado_app = detectar_app_en_primer_plano()
         paquete_detectado = estado_app.paquete_en_primer_plano
-        
+
         if self.ultima_app_abierta and self.ultima_app_abierta != self._obtener_paquete_zenchi():
-            if paquete_detectado is None or paquete_detectado == self._obtener_paquete_zenchi():
+            # --- Fix: si la "última app abierta" ya está bloqueada, no
+            # seguir arrastrándola en el fallback. Antes esto causaba que
+            # una app bloqueada siguiera acumulando tiempo indefinidamente
+            # (incluso en Home), inflando el total diario y bloqueando por
+            # error otras apps sin uso real. ---
+            if self.ultima_app_abierta in self.apps_bloqueadas_hoy:
+                self.ultima_app_abierta = None
+                if self.app_en_primer_plano:
+                    self._finalizar_tiempo_app_actual()
+                    self.app_en_primer_plano = ""
+                self.tiempo_app_actual = 0
+                if hasattr(self, "etiqueta_app_activa"):
+                    self.etiqueta_app_activa.text = "App activa: --"
+                # Continúa evaluando normalmente con lo que haya detectado el sistema.
+            elif paquete_detectado is None or paquete_detectado == self._obtener_paquete_zenchi():
                 # No hubo confirmación del sistema; seguimos contando la última app abierta.
                 if self.app_en_primer_plano != self.ultima_app_abierta:
                     self.app_en_primer_plano = self.ultima_app_abierta
@@ -631,6 +672,19 @@ class ZenchiApp(App):
                     tiempo_aplicado = self.cache_tiempos_por_app.get(self.app_en_primer_plano, 0)
                     if self._inicio_tiempo_app_actual is not None:
                         tiempo_aplicado += max(0, int(time() - self._inicio_tiempo_app_actual))
+
+                    # --- Fix: este camino no revisaba el límite por app.
+                    # Si el tiempo fantasma cruza el límite aquí, hay que
+                    # bloquear igual que en el camino "normal". ---
+                    if tiempo_aplicado >= self.limite_segundos_por_app:
+                        self.cache_tiempos_por_app[self.app_en_primer_plano] = tiempo_aplicado
+                        self.tiempo_acumulado_hoy = sum(self.cache_tiempos_por_app.values())
+                        self.segundos_usados = self.tiempo_acumulado_hoy
+                        self.apps_bloqueadas_hoy.add(self.app_en_primer_plano)
+                        self.paquete_restringido_actual = self.app_en_primer_plano
+                        self._cerrar_app_actual()
+                        return
+
                     self.cache_tiempos_por_app[self.app_en_primer_plano] = tiempo_aplicado
                     self.tiempo_acumulado_hoy = sum(self.cache_tiempos_por_app.values())
                     self.segundos_usados = self.tiempo_acumulado_hoy
