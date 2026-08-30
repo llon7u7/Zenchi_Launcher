@@ -8,6 +8,31 @@ Este módulo proporciona funciones para:
 
 Para que funcione correctamente, el usuario debe otorgar el permiso
 PACKAGE_USAGE_STATS desde Ajustes > Acceso especial > Uso de datos.
+
+ACTUALIZACIÓN (fix "tiempo sigue avanzando en segundo plano"):
+`detectar_app_en_primer_plano()` usaba `getRunningAppProcesses()` con
+`importancia <= 200` como señal de "app activa". El problema es que
+`IMPORTANCE_FOREGROUND_SERVICE = 125` también es <= 200, así que una app
+con un servicio en primer plano (reproduciendo audio/video, con una
+notificación persistente, etc.) seguía siendo detectada como "en pantalla"
+aunque el usuario ya hubiera vuelto al launcher. Ahora:
+
+1. `UsageEvents` (MOVE_TO_FOREGROUND / MOVE_TO_BACKGROUND) es la fuente
+   PRIMARIA y más confiable — se consulta primero.
+2. `RunningTasks`/`RunningAppProcesses` sólo se usan como respaldo, y el
+   segundo exige `importance == IMPORTANCE_FOREGROUND` (exactamente 100),
+   no un rango amplio.
+3. Cualquier detección que coincida con el paquete del launcher/home se
+   trata como "sin app en primer plano" (None), en todos los caminos, no
+   solo en el último fallback.
+
+IMPORTANTE — limitación de arquitectura: esta función solo puede ejecutarse
+mientras el proceso de Python está vivo y su Clock corriendo, es decir,
+mientras la Activity de Zenchi está en primer plano (visible). En cuanto el
+usuario abre otra app, Android pausa la Activity y Kivy detiene su loop, así
+que este módulo NO puede vigilar ni bloquear apps mientras el usuario está
+dentro de ellas. Para eso se necesita un Service nativo de Android
+(ver `android_src/.../ZenchiMonitorService.java` y `bridge/estado_compartido.py`).
 """
 
 from __future__ import annotations
@@ -31,12 +56,12 @@ class EstadisticaUso:
     tiempo_total_ms: int  # tiempo total de uso en milisegundos
     ultima_vez_usado: int  # timestamp de la última vez que se usó
     tiempo_en_primer_plano_ms: int = 0  # tiempo estimado en primer plano
-    
+
     @property
     def tiempo_total_segundos(self) -> int:
         """Tiempo total de uso en segundos."""
         return self.tiempo_total_ms // 1000
-    
+
     @property
     def tiempo_en_primer_plano_segundos(self) -> int:
         """Tiempo en primer plano en segundos."""
@@ -55,176 +80,174 @@ def _obtener_actividad():
     """Obtiene la actividad actual de Python en Android para Buildozer."""
     if not HAY_ANDROID:
         return None
-    
+
     try:
         PythonActivity = autoclass("org.kivy.android.PythonActivity")
         actividad = PythonActivity.mActivity
-        
+
         if actividad is not None:
             return actividad
-            
+
         if hasattr(PythonActivity, 'mInstance') and PythonActivity.mInstance is not None:
             return PythonActivity.mInstance
-            
+
     except Exception as e:
         print(f"[ERROR] No se pudo obtener actividad: {e}")
-        
+
     try:
         from android import python_act
         if python_act is not None:
             return python_act
     except Exception as e:
         print(f"[ERROR] No se pudo obtener actividad (método 2): {e}")
-    
+
     return None
+
+
+def _obtener_paquete_home(actividad) -> Optional[str]:
+    """Devuelve el paquete que resuelve como HOME (debería ser el propio Zenchi)."""
+    try:
+        PackageManager = autoclass("android.content.pm.PackageManager")
+        Intent = autoclass("android.content.Intent")
+        pm = actividad.getPackageManager()
+        home_intent = Intent(Intent.ACTION_MAIN)
+        home_intent.addCategory(Intent.CATEGORY_HOME)
+        home_resolve = pm.resolveActivity(home_intent, PackageManager.MATCH_DEFAULT_ONLY)
+        if home_resolve is None:
+            return None
+        return str(home_resolve.activityInfo.packageName)
+    except Exception:
+        return None
 
 
 def obtener_permiso_usage_stats() -> bool:
     """Verifica si la app tiene permiso para acceder a UsageStats.
-    
+
     Returns:
         True si ya tiene permiso, False si necesita solicitarlo al usuario.
     """
     actividad = _obtener_actividad()
-    
+
     if actividad is None:
         print("[DEBUG] Modo desktop: simulando permiso de UsageStats concedido")
         return True
-    
+
     try:
         Context = autoclass("android.content.Context")
         AppOpsManager = autoclass("android.app.AppOpsManager")
-        
+
         app_ops = cast(
             "android.app.AppOpsManager",
             actividad.getSystemService(Context.APP_OPS_SERVICE)
         )
-        
-        # Verificar modo de operación para PACKAGE_USAGE_STATS
+
         mode = app_ops.checkOpNoThrow(
             AppOpsManager.OPSTR_GET_USAGE_STATS,
             actividad.getApplicationInfo().uid,
             actividad.getPackageName()
         )
-        
+
         tiene_permiso = (mode == AppOpsManager.MODE_ALLOWED)
-        
+
         if not tiene_permiso:
             print("[WARNING] No hay permiso PACKAGE_USAGE_STATS")
             print("[INFO] El usuario debe habilitarlo en: Ajustes > Acceso especial > Uso de datos")
         else:
             print("[DEBUG] Permiso PACKAGE_USAGE_STATS concedido")
-            
+
         return tiene_permiso
-        
+
     except Exception as e:
         print(f"[ERROR] Error al verificar permiso UsageStats: {e}")
         return False
 
 
 def solicitar_permiso_usage_stats() -> None:
-    """Abre la pantalla de ajustes para que el usuario conceda el permiso UsageStats.
-    
-    Debe llamarse desde la interfaz cuando se detecta que no hay permiso.
-    Ejemplo:
-        boton.bind(on_release=lambda *_: solicitar_permiso_usage_stats())
-    """
+    """Abre la pantalla de ajustes para que el usuario conceda el permiso UsageStats."""
     actividad = _obtener_actividad()
-    
+
     if actividad is None:
         print("[demo escritorio] Aquí se abriría la pantalla de permisos UsageStats")
         return
-    
+
     try:
         Settings = autoclass("android.provider.Settings")
         Intent = autoclass("android.content.Intent")
-        
+
         intent = Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS)
         actividad.startActivity(intent)
-        
+
         print("[INFO] Abriendo pantalla de permisos UsageStats")
-        
+
     except Exception as e:
         print(f"[ERROR] Error al abrir ajustes UsageStats: {e}")
 
 
 def obtener_estadisticas_uso(rango_horas: int = 24) -> list[EstadisticaUso]:
-    """Obtiene estadísticas de uso de todas las apps en las últimas N horas.
-    
-    Args:
-        rango_horas: Ventana de tiempo hacia atrás para consultar estadísticas.
-        
-    Returns:
-        Lista de EstadisticaUso ordenada por tiempo de uso (mayor a menor).
-    """
+    """Obtiene estadísticas de uso de todas las apps en las últimas N horas."""
     actividad = _obtener_actividad()
-    
+
     if actividad is None:
         print("[DEBUG] Modo desktop: devolviendo estadísticas mock")
         return [
             EstadisticaUso(
                 paquete="com.instagram.android",
                 nombre_app="Instagram",
-                tiempo_total_ms=3600000,  # 1 hora
+                tiempo_total_ms=3600000,
                 ultima_vez_usado=int(datetime.now().timestamp() * 1000),
                 tiempo_en_primer_plano_ms=1800000
             ),
             EstadisticaUso(
                 paquete="com.google.android.youtube",
                 nombre_app="YouTube",
-                tiempo_total_ms=2700000,  # 45 min
+                tiempo_total_ms=2700000,
                 ultima_vez_usado=int((datetime.now() - timedelta(minutes=30)).timestamp() * 1000),
                 tiempo_en_primer_plano_ms=900000
             ),
         ]
-    
+
     if not obtener_permiso_usage_stats():
         print("[WARNING] Sin permiso UsageStats, retornando lista vacía")
         return []
-    
+
     try:
         Context = autoclass("android.content.Context")
         UsageStatsManager = autoclass("android.app.usage.UsageStatsManager")
-        
+
         usage_stats_manager = cast(
             "android.app.usage.UsageStatsManager",
             actividad.getSystemService(Context.USAGE_STATS_SERVICE)
         )
-        
-        # Calcular ventana de tiempo
+
         ahora_ms = int(datetime.now().timestamp() * 1000)
         inicio_ms = ahora_ms - (rango_horas * 60 * 60 * 1000)
-        
-        # Obtener estadísticas de uso
+
         stats = usage_stats_manager.queryUsageStats(
             UsageStatsManager.INTERVAL_DAILY,
             inicio_ms,
             ahora_ms
         )
-        
+
         if stats is None or stats.size() == 0:
             print("[DEBUG] No hay estadísticas de uso disponibles")
             return []
-        
-        PackageManager = autoclass("android.content.pm.PackageManager")
+
         pm = actividad.getPackageManager()
-        
+
         resultados: list[EstadisticaUso] = []
-        
+
         for i in range(stats.size()):
             usage_stat = stats.get(i)
             paquete = str(usage_stat.getPackageName())
             tiempo_total = int(usage_stat.getTotalTimeInForeground())
             ultima_vez = int(usage_stat.getLastTimeUsed())
-            
-            # Obtener nombre legible de la app
+
             try:
                 app_info = pm.getApplicationInfo(paquete, 0)
                 nombre_app = str(pm.getApplicationLabel(app_info))
             except Exception:
                 nombre_app = paquete
-            
-            # Solo incluir apps con tiempo de uso significativo (> 0)
+
             if tiempo_total > 0:
                 resultados.append(
                     EstadisticaUso(
@@ -232,16 +255,15 @@ def obtener_estadisticas_uso(rango_horas: int = 24) -> list[EstadisticaUso]:
                         nombre_app=nombre_app,
                         tiempo_total_ms=tiempo_total,
                         ultima_vez_usado=ultima_vez,
-                        tiempo_en_primer_plano_ms=tiempo_total  # Simplificación inicial
+                        tiempo_en_primer_plano_ms=tiempo_total
                     )
                 )
-        
-        # Ordenar por tiempo de uso (mayor primero)
+
         resultados.sort(key=lambda x: x.tiempo_total_ms, reverse=True)
-        
+
         print(f"[INFO] Se obtuvieron {len(resultados)} apps con estadísticas de uso")
         return resultados
-        
+
     except Exception as e:
         print(f"[ERROR] Error al obtener estadísticas de uso: {e}")
         import traceback
@@ -252,10 +274,21 @@ def obtener_estadisticas_uso(rango_horas: int = 24) -> list[EstadisticaUso]:
 def detectar_app_en_primer_plano() -> AppState:
     """Detecta qué aplicación está realmente en primer plano.
 
-    Primero intenta ActivityManager y procesos activos. Si el sistema no devuelve
-    un resultado fiable, usa UsageStats para buscar la app más reciente en primer
-    plano. Esto evita que la UI quede en "--" cuando el launcher no responde
-    bien a getRunningTasks() en versiones modernas de Android.
+    Orden de confiabilidad (de mayor a menor):
+    1. UsageEvents (MOVE_TO_FOREGROUND / MOVE_TO_BACKGROUND) — refleja
+       exactamente lo que el sistema considera "en pantalla", sin verse
+       afectado por servicios en primer plano de otras apps.
+    2. RunningTasks(1).topActivity — sirve como respaldo si por algún
+       motivo el stream de eventos viene vacío.
+    3. RunningAppProcesses con `importance == IMPORTANCE_FOREGROUND` (100)
+       EXACTO — antes se usaba `<= 200`, lo cual también incluía
+       `IMPORTANCE_FOREGROUND_SERVICE` (125) y causaba falsos positivos
+       con apps que solo tienen un servicio corriendo (música, video, etc.)
+       pero ya no están en pantalla.
+    4. Último recurso: última app usada según queryUsageStats.
+
+    En cualquiera de los caminos, si el paquete detectado es el propio
+    launcher/home, se considera que NO hay app en primer plano (None).
     """
     actividad = _obtener_actividad()
 
@@ -268,99 +301,56 @@ def detectar_app_en_primer_plano() -> AppState:
         )
 
     ahora_ms = int(datetime.now().timestamp() * 1000)
+    paquete_zenchi = str(actividad.getPackageName())
+    paquete_home = _obtener_paquete_home(actividad) or paquete_zenchi
+
+    def _es_home(paquete: Optional[str]) -> bool:
+        return paquete is not None and (paquete == paquete_home or paquete == paquete_zenchi)
 
     try:
         Context = autoclass("android.content.Context")
         ActivityManager = autoclass("android.app.ActivityManager")
         UsageStatsManager = autoclass("android.app.usage.UsageStatsManager")
         UsageEvents = autoclass("android.app.usage.UsageEvents")
-        PackageManager = autoclass("android.content.pm.PackageManager")
-        Intent = autoclass("android.content.Intent")
-
-        activity_manager = cast(
-            "android.app.ActivityManager",
-            actividad.getSystemService(Context.ACTIVITY_SERVICE),
-        )
-        pm = actividad.getPackageManager()
-
-        home_intent = Intent(Intent.ACTION_MAIN)
-        home_intent.addCategory(Intent.CATEGORY_HOME)
-        home_resolve = pm.resolveActivity(home_intent, PackageManager.MATCH_DEFAULT_ONLY)
-        paquete_home = None if home_resolve is None else str(home_resolve.activityInfo.packageName)
-
-        try:
-            tareas = activity_manager.getRunningTasks(1)
-            if tareas is not None and tareas.size() > 0:
-                tarea_superior = tareas.get(0)
-                componente = getattr(tarea_superior, "topActivity", None)
-                if componente is not None:
-                    paquete_activo = str(componente.getPackageName())
-                    if paquete_activo:
-                        print(f"[DEBUG] App en primer plano (RunningTasks): {paquete_activo}")
-                        return AppState(
-                            paquete_en_primer_plano=paquete_activo,
-                            tiempo_desde_ultimo_cambio_ms=0,
-                            timestamp_ultimo_cambio=ahora_ms,
-                        )
-        except Exception:
-            pass
-
-        try:
-            procesos = activity_manager.getRunningAppProcesses()
-            if procesos is not None:
-                for proceso in procesos:
-                    pkg_list = getattr(proceso, "pkgList", None)
-                    if not pkg_list:
-                        continue
-                    for paquete in pkg_list:
-                        nombre_pkg = str(paquete)
-                        importancia = getattr(proceso, "importance", None)
-                        if nombre_pkg and importancia is not None and importancia <= 200:
-                            print(f"[DEBUG] App en primer plano (RunningAppProcesses): {nombre_pkg}")
-                            return AppState(
-                                paquete_en_primer_plano=nombre_pkg,
-                                tiempo_desde_ultimo_cambio_ms=0,
-                                timestamp_ultimo_cambio=ahora_ms,
-                            )
-        except Exception:
-            pass
 
         usage_stats_manager = cast(
             "android.app.usage.UsageStatsManager",
             actividad.getSystemService(Context.USAGE_STATS_SERVICE),
         )
 
-        inicio_ms = ahora_ms - (24 * 60 * 60 * 1000)
+        inicio_ms = ahora_ms - (10 * 60 * 1000)  # ventana de 10 minutos es suficiente
 
+        # --- 1) Fuente primaria: UsageEvents ---
         try:
             eventos = usage_stats_manager.queryEvents(inicio_ms, ahora_ms)
             if eventos is not None:
-                ultimo_evento = UsageEvents.Event()
+                evento = UsageEvents.Event()
                 paquete_activo = None
                 ultimo_timestamp = 0
                 ultimo_tipo = None
                 while eventos.hasNextEvent():
-                    eventos.getNextEvent(ultimo_evento)
-                    tipo_evento = ultimo_evento.getEventType()
+                    eventos.getNextEvent(evento)
+                    tipo_evento = evento.getEventType()
                     if tipo_evento in (
                         UsageEvents.Event.MOVE_TO_FOREGROUND,
                         UsageEvents.Event.MOVE_TO_BACKGROUND,
                     ):
-                        paquete = str(ultimo_evento.getPackageName())
-                        tiempo = int(ultimo_evento.getTimeStamp())
+                        paquete = str(evento.getPackageName())
+                        tiempo = int(evento.getTimeStamp())
                         if paquete:
                             ultimo_timestamp = tiempo
                             paquete_activo = paquete
                             ultimo_tipo = tipo_evento
-                if paquete_activo:
-                    if ultimo_tipo == UsageEvents.Event.MOVE_TO_BACKGROUND:
-                        print(f"[DEBUG] UsoStats events -> sin app activa (último cierre: {paquete_activo})")
+
+                if paquete_activo is not None:
+                    if ultimo_tipo == UsageEvents.Event.MOVE_TO_BACKGROUND or _es_home(paquete_activo):
+                        print(f"[DEBUG] UsageEvents -> sin app activa (último: {paquete_activo})")
                         return AppState(
                             paquete_en_primer_plano=None,
                             tiempo_desde_ultimo_cambio_ms=ahora_ms - ultimo_timestamp,
                             timestamp_ultimo_cambio=ultimo_timestamp,
                         )
-                    print(f"[DEBUG] UsoStats events -> {paquete_activo} (último evento: {ultimo_timestamp})")
+                    print(f"[DEBUG] UsageEvents -> {paquete_activo}")
                     return AppState(
                         paquete_en_primer_plano=paquete_activo,
                         tiempo_desde_ultimo_cambio_ms=ahora_ms - ultimo_timestamp,
@@ -369,6 +359,58 @@ def detectar_app_en_primer_plano() -> AppState:
         except Exception:
             pass
 
+        # --- 2) Respaldo: RunningTasks ---
+        activity_manager = cast(
+            "android.app.ActivityManager",
+            actividad.getSystemService(Context.ACTIVITY_SERVICE),
+        )
+        try:
+            tareas = activity_manager.getRunningTasks(1)
+            if tareas is not None and tareas.size() > 0:
+                tarea_superior = tareas.get(0)
+                componente = getattr(tarea_superior, "topActivity", None)
+                if componente is not None:
+                    paquete_activo = str(componente.getPackageName())
+                    if paquete_activo and not _es_home(paquete_activo):
+                        print(f"[DEBUG] RunningTasks -> {paquete_activo}")
+                        return AppState(
+                            paquete_en_primer_plano=paquete_activo,
+                            tiempo_desde_ultimo_cambio_ms=0,
+                            timestamp_ultimo_cambio=ahora_ms,
+                        )
+                    if paquete_activo and _es_home(paquete_activo):
+                        return AppState(
+                            paquete_en_primer_plano=None,
+                            tiempo_desde_ultimo_cambio_ms=0,
+                            timestamp_ultimo_cambio=ahora_ms,
+                        )
+        except Exception:
+            pass
+
+        # --- 3) Respaldo estricto: solo IMPORTANCE_FOREGROUND exacto ---
+        try:
+            procesos = activity_manager.getRunningAppProcesses()
+            if procesos is not None:
+                for proceso in procesos:
+                    pkg_list = getattr(proceso, "pkgList", None)
+                    if not pkg_list:
+                        continue
+                    importancia = getattr(proceso, "importance", None)
+                    if importancia != ActivityManager.RunningAppProcessInfo.IMPORTANCE_FOREGROUND:
+                        continue
+                    for paquete in pkg_list:
+                        nombre_pkg = str(paquete)
+                        if nombre_pkg and not _es_home(nombre_pkg):
+                            print(f"[DEBUG] RunningAppProcesses (IMPORTANCE_FOREGROUND exacto) -> {nombre_pkg}")
+                            return AppState(
+                                paquete_en_primer_plano=nombre_pkg,
+                                tiempo_desde_ultimo_cambio_ms=0,
+                                timestamp_ultimo_cambio=ahora_ms,
+                            )
+        except Exception:
+            pass
+
+        # --- 4) Último recurso: queryUsageStats por última vez usada ---
         stats = usage_stats_manager.queryUsageStats(
             UsageStatsManager.INTERVAL_BEST,
             inicio_ms,
@@ -383,12 +425,14 @@ def detectar_app_en_primer_plano() -> AppState:
                 usage_stat = stats.get(i)
                 ultima_vez = int(usage_stat.getLastTimeUsed())
                 paquete = str(usage_stat.getPackageName())
-                if ultima_vez > ultimo_timestamp and paquete and (paquete_home is None or paquete != paquete_home):
+                if ultima_vez > ultimo_timestamp and paquete and not _es_home(paquete):
                     ultimo_timestamp = ultima_vez
                     paquete_activo = paquete
 
-            if paquete_activo:
-                print(f"[DEBUG] UsoStats fallback -> {paquete_activo} (último uso hace {ahora_ms - ultimo_timestamp}ms)")
+            # Si esa "última vez usada" es muy vieja (más de 15s), no es
+            # confiable como señal de "está en pantalla ahora mismo".
+            if paquete_activo and (ahora_ms - ultimo_timestamp) <= 15000:
+                print(f"[DEBUG] UsoStats fallback -> {paquete_activo}")
                 return AppState(
                     paquete_en_primer_plano=paquete_activo,
                     tiempo_desde_ultimo_cambio_ms=ahora_ms - ultimo_timestamp,
@@ -419,23 +463,14 @@ def acumular_tiempo_sesion(
     segundos_a_acumular: int,
     cache_tiempos: dict[str, int]
 ) -> dict[str, int]:
-    """Acumula tiempo de uso para una app específica durante la sesión.
-    
-    Args:
-        paquete: Nombre del paquete de la app.
-        segundos_a_acumular: Segundos a añadir al contador.
-        cache_tiempos: Diccionario que mantiene el estado acumulado por paquete.
-        
-    Returns:
-        El mismo diccionario actualizado con el nuevo tiempo acumulado.
-    """
+    """Acumula tiempo de uso para una app específica durante la sesión."""
     if paquete not in cache_tiempos:
         cache_tiempos[paquete] = 0
-    
+
     cache_tiempos[paquete] += segundos_a_acumular
-    
+
     print(f"[DEBUG] Acumulando {segundos_a_acumular}s para {paquete}: total={cache_tiempos[paquete]}s")
-    
+
     return cache_tiempos
 
 
@@ -443,53 +478,35 @@ def obtener_top_apps_uso(
     estadisticas: list[EstadisticaUso],
     top_n: int = 5
 ) -> list[EstadisticaUso]:
-    """Obtiene las N apps más usadas de la lista de estadísticas.
-    
-    Args:
-        estadisticas: Lista completa de estadísticas de uso.
-        top_n: Cantidad de apps a retornar.
-        
-    Returns:
-        Lista con las top N apps ordenadas por tiempo de uso.
-    """
+    """Obtiene las N apps más usadas de la lista de estadísticas."""
     if not estadisticas:
         return []
-    
-    # Ya están ordenadas por defecto de obtener_estadisticas_uso
+
     return estadisticas[:top_n]
 
 
 def formatear_tiempo(ms: int) -> str:
-    """Convierte milisegundos a formato legible HH:MM:SS.
-    
-    Args:
-        ms: Tiempo en milisegundos.
-        
-    Returns:
-        String formateado como "HH:MM:SS".
-    """
+    """Convierte milisegundos a formato legible HH:MM:SS."""
     segundos = ms // 1000
     horas = segundos // 3600
     minutos = (segundos % 3600) // 60
     segs_restantes = segundos % 60
-    
+
     return f"{horas:02d}:{minutos:02d}:{segs_restantes:02d}"
 
 
 # Demo rápida para probar en consola
 if __name__ == "__main__":
     print("=== Demo UsageStats ===")
-    
-    # Simular desktop
+
     stats = obtener_estadisticas_uso()
     print(f"\nApps encontradas: {len(stats)}")
     for stat in stats:
         print(f"  - {stat.nombre_app}: {formatear_tiempo(stat.tiempo_total_ms)}")
-    
+
     estado = detectar_app_en_primer_plano()
     print(f"\nApp en primer plano: {estado.paquete_en_primer_plano}")
-    
-    # Test de acumulación
+
     cache = {}
     cache = acumular_tiempo_sesion("com.test.app", 60, cache)
     cache = acumular_tiempo_sesion("com.test.app", 120, cache)

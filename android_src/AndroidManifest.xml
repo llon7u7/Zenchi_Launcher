@@ -4,19 +4,35 @@
 
     <!-- Permiso para consultar todas las apps instaladas (necesario para Android 11+) -->
     <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES" />
-    
+
     <!-- Permiso para acceder a estadísticas de uso de apps -->
-    <uses-permission android:name="android.permission.PACKAGE_USAGE_STATS" 
+    <uses-permission android:name="android.permission.PACKAGE_USAGE_STATS"
         tools:ignore="ProtectedPermissions" />
 
     <!-- Permisos requeridos para bloquear apps desde el launcher -->
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
-    
+
+    <!--
+        ACTUALIZACIÓN: permisos para el Service de vigilancia en tiempo real
+        (ZenchiMonitorService). Sin FOREGROUND_SERVICE el Service no puede
+        llamar startForeground(), y sin él, Android lo mata en segundos en
+        cuanto Zenchi pasa a segundo plano — justo el caso que queremos
+        resolver (bloquear mientras el usuario está DENTRO de otra app).
+
+        En Android 14 (API 34)+ los foreground services deben declarar un
+        "tipo". Usamos "specialUse" porque el propósito (control parental /
+        bienestar digital) no encaja en ninguna de las categorías estándar
+        (location, camera, mediaPlayback, etc.). Esto requiere justificar el
+        uso ante Play Store al publicar la app.
+    -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+
     <!-- Permiso para ser launcher (pantalla de inicio) -->
     <uses-permission android:name="android.permission.SET_WALLPAPER" />
     <uses-permission android:name="android.permission.SET_WALLPAPER_HINTS" />
-    
+
     <!-- Características requeridas para launcher -->
     <uses-feature android:name="android.hardware.touchscreen" android:required="false"/>
     <uses-feature android:name="android.software.home_screen" android:required="true"/>
@@ -26,7 +42,7 @@
         android:icon="@mipmap/icon"
         xmlns:tools="http://schemas.android.com/tools"
         tools:ignore="ProtectedPermissions">
-        
+
         <!-- Actividad principal con logging mejorado -->
         <activity
             android:name="org.kivy.android.PythonActivity"
@@ -46,12 +62,26 @@
                 <category android:name="android.intent.category.DEFAULT" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
-            
+
             <!-- Segundo intent-filter explícito solo para CATEGORY_HOME -->
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.HOME" />
             </intent-filter>
         </activity>
+
+        <!--
+            Service nativo de vigilancia en tiempo real. Corre independiente
+            de la Activity de Kivy, por eso puede bloquear apps aunque Zenchi
+            esté en segundo plano. Ver android_src/.../ZenchiMonitorService.java
+        -->
+        <service
+            android:name="org.zenchi.ZenchiMonitorService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Control de tiempo de uso de apps (bienestar digital)" />
+        </service>
     </application>
 </manifest>

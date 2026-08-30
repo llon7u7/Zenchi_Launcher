@@ -1,12 +1,23 @@
 """
 Punto de entrada de la app Zenchi.
 
-ACTUALIZACIÓN: Fix del bug donde al bloquear una app por límite, las demás
-apps quedaban bloqueadas también. La causa era que `_cerrar_app_actual`
-no limpiaba `app_en_primer_plano` / `ultima_app_abierta`, así que el
-"fallback" de `_actualizar_monitoreo_apps` seguía sumando tiempo fantasma
-a la app ya bloqueada (incluso estando en Home), inflando el total diario
-y disparando el bloqueo global sobre apps que nunca se usaron.
+ACTUALIZACIÓN (bloqueo cruzado entre apps): Fix del bug donde al bloquear
+una app por límite, las demás apps quedaban bloqueadas también. La causa
+era que `_cerrar_app_actual` no limpiaba `app_en_primer_plano` /
+`ultima_app_abierta`, así que el "fallback" de `_actualizar_monitoreo_apps`
+seguía sumando tiempo fantasma a la app ya bloqueada, inflando el total
+diario y disparando el bloqueo global sobre apps que nunca se usaron.
+
+ACTUALIZACIÓN (bloqueo en tiempo real): Kivy detiene su `Clock` cuando la
+Activity se pausa (el usuario abrió otra app), así que Python NO puede
+vigilar ni bloquear apps mientras el usuario está DENTRO de ellas. Ahora
+`ZenchiMonitorService` (Java, nativo) corre independiente del ciclo de
+vida de la Activity y hace el bloqueo real en esos casos. Este archivo:
+  - Arranca el Service en `build()`.
+  - Publica configuración/estado hacia el Service vía `bridge/estado_compartido`
+    cada vez que cambian (para que el Service sepa qué límites usar).
+  - En `on_resume()`, fusiona lo que el Service haya hecho mientras Zenchi
+    estaba en segundo plano (apps bloqueadas nuevas, tiempo acumulado).
 
 Este archivo conecta el MOTOR (motor/politica.py) con Kivy.
 La parte de INTERFAZ (colores, layout, animaciones, estilo) es responsabilidad
@@ -40,6 +51,7 @@ from bridge.servicios_android import (
     _obtener_actividad,
     abrir_app,
     es_launcher_predeterminado,
+    iniciar_servicio_monitor,
     listar_apps_instaladas,
     solicitar_ser_launcher_predeterminado,
 )
@@ -48,6 +60,7 @@ from bridge.usage_stats import (
     obtener_permiso_usage_stats,
     solicitar_permiso_usage_stats,
 )
+from bridge import estado_compartido
 
 
 class ZenchiApp(App):
@@ -107,6 +120,16 @@ class ZenchiApp(App):
         }
         with ruta.open("w", encoding="utf-8") as archivo:
             json.dump(payload, archivo, ensure_ascii=False, indent=2)
+
+        # Publica el mismo estado hacia ZenchiMonitorService (Java), que es
+        # quien vigila mientras Zenchi está en segundo plano. Sin esto, el
+        # Service nunca se enteraría de nuevas apps bloqueadas ni de tiempo
+        # ya acumulado por Python.
+        estado_compartido.publicar_estado(
+            fecha=self.dia_actual,
+            cache_tiempos_por_app=self.cache_tiempos_por_app,
+            apps_bloqueadas_hoy=self.apps_bloqueadas_hoy,
+        )
 
     def _reiniciar_si_nuevo_dia(self) -> None:
         hoy = date.today().isoformat()
@@ -170,6 +193,16 @@ class ZenchiApp(App):
         }
         with ruta.open("w", encoding="utf-8") as archivo:
             json.dump(payload, archivo, ensure_ascii=False, indent=2)
+
+        # Publica la configuración hacia el Service nativo: sin esto, si el
+        # usuario ajusta un límite personalizado desde la UI, el Service
+        # seguiría usando el límite por defecto mientras vigila en segundo
+        # plano hasta que Zenchi se reabra.
+        estado_compartido.publicar_configuracion(
+            apps_adictivas=self.apps_adictivas,
+            limites_personalizados=self.limites_personalizados,
+            limite_app_defecto=int(self.limite_segundos_por_app),
+        )
 
     def _obtener_limites_dinamicos(self) -> tuple[int, int]:
         """Devuelve el límite diario y por app según la historia del usuario."""
@@ -304,7 +337,59 @@ class ZenchiApp(App):
 
         Clock.schedule_interval(self._actualizar, 1)
 
+        # Arranca el Service nativo que vigila el uso incluso cuando Zenchi
+        # está en segundo plano (única forma real de bloquear una app
+        # mientras el usuario está DENTRO de ella; ver comentario al inicio
+        # del archivo y bridge/servicios_android.iniciar_servicio_monitor).
+        iniciar_servicio_monitor()
+        estado_compartido.publicar_configuracion(
+            apps_adictivas=self.apps_adictivas,
+            limites_personalizados=self.limites_personalizados,
+            limite_app_defecto=int(self.limite_segundos_por_app),
+        )
+        estado_compartido.publicar_estado(
+            fecha=self.dia_actual,
+            cache_tiempos_por_app=self.cache_tiempos_por_app,
+            apps_bloqueadas_hoy=self.apps_bloqueadas_hoy,
+        )
+
         return raiz
+
+    def on_resume(self):
+        """Se llama cuando Zenchi vuelve a primer plano (el usuario cerró
+        la app que tenía abierta, o el Service lo mandó al Home tras un
+        bloqueo). Aquí es donde nos enteramos de todo lo que pasó mientras
+        el Clock de Kivy estaba pausado.
+        """
+        self._reiniciar_si_nuevo_dia()
+
+        bloqueadas_antes = set(self.apps_bloqueadas_hoy)
+        estado_compartido.fusionar_estado_en(self)
+        nuevas_bloqueadas = self.apps_bloqueadas_hoy - bloqueadas_antes
+
+        self._guardar_estado_diario()
+
+        if nuevas_bloqueadas and hasattr(self, "etiqueta_estado"):
+            paquete_recien_bloqueado = sorted(nuevas_bloqueadas)[0]
+            self.paquete_restringido_actual = paquete_recien_bloqueado
+            nombre = paquete_recien_bloqueado.split(".")[-1]
+            self.etiqueta_estado.text = f"{nombre} alcanzó su límite y fue bloqueada."
+            self.estado_mascota = EstadoMascota.ENOJADO.value
+            if hasattr(self, "etiqueta_mascota"):
+                self.etiqueta_mascota.text = f"[ {EstadoMascota.ENOJADO.value} ]"
+
+        # Limpia el rastreo local: la app que tuviéramos "abierta" ya no
+        # aplica, el usuario está de vuelta en Zenchi.
+        self.app_en_primer_plano = ""
+        self.ultima_app_abierta = None
+        self._inicio_tiempo_app_actual = None
+        self.tiempo_app_actual = 0
+        if hasattr(self, "etiqueta_app_activa"):
+            self.etiqueta_app_activa.text = "App activa: --"
+
+        self._refrescar_lista_apps()
+
+        return True
 
     def _guardar_limite_para_paquete(self, paquete: str, nombre: str, minutos: int, popup: Popup | None = None) -> None:
         if not paquete:

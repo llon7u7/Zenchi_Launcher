@@ -1,8 +1,15 @@
 """
 Puente hacia las APIs de Android para convertir a Zenchi en el launcher
-(pantalla de inicio) y para listar/abrir las apps instaladas del usuario.
+(pantalla de inicio), listar/abrir las apps instaladas del usuario, y
+arrancar el Service nativo que vigila el uso incluso cuando Zenchi está
+en segundo plano.
 
-ACTUALIZACIÓN: Corregida detección de actividad y manejo de PackageManager para Buildozer
+ACTUALIZACIÓN: Se agregó `iniciar_servicio_monitor` / `detener_servicio_monitor`.
+Kivy detiene su `Clock` cuando la Activity se pausa (usuario abrió otra
+app), así que el bloqueo en tiempo real cuando el usuario está DENTRO de
+una app solo puede hacerlo un Service nativo de Android
+(`ZenchiMonitorService`), no Python. Ver `bridge/estado_compartido.py`
+para cómo se sincroniza el estado entre ambos.
 """
 
 from __future__ import annotations
@@ -31,25 +38,25 @@ def _obtener_actividad():
     """Obtiene la actividad actual de Python en Android para Buildozer."""
     if not HAY_ANDROID:
         return None
-    
+
     try:
         # Método correcto para Buildozer: obtener mActivity de PythonActivity
         PythonActivity = autoclass("org.kivy.android.PythonActivity")
         actividad = PythonActivity.mActivity
-        
+
         # Verificar que la actividad no sea None
         if actividad is not None:
             print(f"[DEBUG] _obtener_actividad: Usando PythonActivity.mActivity = {actividad}")
             return actividad
-            
+
         # Si mActivity es None, intentar con mInstance como fallback
         if hasattr(PythonActivity, 'mInstance') and PythonActivity.mInstance is not None:
             print(f"[DEBUG] _obtener_actividad: Usando PythonActivity.mInstance = {PythonActivity.mInstance}")
             return PythonActivity.mInstance
-            
+
     except Exception as e:
         print(f"[ERROR] No se pudo obtener actividad (método 1): {e}")
-        
+
     try:
         # Fallback: intentar acceder desde el módulo android
         from android import python_act
@@ -58,7 +65,7 @@ def _obtener_actividad():
             return python_act
     except Exception as e:
         print(f"[ERROR] No se pudo obtener actividad (método 2): {e}")
-    
+
     # Si todo falla, retornar None
     print("[DEBUG] _obtener_actividad: No se pudo obtener ninguna actividad, retornando None")
     return None
@@ -76,7 +83,7 @@ def solicitar_ser_launcher_predeterminado() -> None:
         boton.bind(on_release=lambda *_: solicitar_ser_launcher_predeterminado())
     """
     actividad = _obtener_actividad()
-    
+
     if actividad is None:
         print("[DEBUG] solicitar_ser_launcher_predeterminado: No hay actividad (modo desktop)")
         print("[demo escritorio] Aquí se abriría el diálogo de 'ser launcher predeterminado'.")
@@ -95,10 +102,10 @@ def solicitar_ser_launcher_predeterminado() -> None:
         )
         disponible = bool(gestor_roles.isRoleAvailable(RoleManager.ROLE_HOME))
         ya_es_holder = bool(gestor_roles.isRoleHeld(RoleManager.ROLE_HOME))
-        
+
         print(f"[DEBUG] solicitar_ser_launcher: SDK={Version.SDK_INT}, disponible={disponible}, ya_es_holder={ya_es_holder}")
         print(f"[DEBUG] Activity package name: {actividad.getPackageName()}")
-        
+
         if disponible and not ya_es_holder:
             intent = gestor_roles.createRequestRoleIntent(RoleManager.ROLE_HOME)
             print("[DEBUG] Iniciando startActivityForResult para ROLE_HOME...")
@@ -128,7 +135,7 @@ def es_launcher_predeterminado() -> bool:
     una vez que ya se logró.
     """
     actividad = _obtener_actividad()
-    
+
     if actividad is None:
         print("[DEBUG] es_launcher_predeterminado: No hay actividad Android (modo desktop)")
         return False
@@ -175,7 +182,7 @@ def listar_apps_instaladas() -> list[AppInstalada]:
     y probar tu grilla de apps sin necesitar el teléfono conectado.
     """
     actividad = _obtener_actividad()
-    
+
     if actividad is None:
         # Mock para desktop - solo visible durante desarrollo
         print("[INFO] Modo desktop: mostrando apps de ejemplo")
@@ -205,14 +212,14 @@ def listar_apps_instaladas() -> list[AppInstalada]:
             apps.append(AppInstalada(nombre=nombre, paquete=paquete))
 
         apps.sort(key=lambda app: app.nombre.lower())
-        
+
         if len(apps) == 0:
             print("[WARNING] No se encontraron apps instaladas")
         else:
             print(f"[INFO] Se encontraron {len(apps)} apps instaladas")
-        
+
         return apps
-        
+
     except Exception as e:
         print(f"[ERROR] Error al listar apps: {e}")
         import traceback
@@ -228,7 +235,7 @@ def abrir_app(paquete: str) -> None:
         boton_app.bind(on_release=lambda *_: abrir_app(app.paquete))
     """
     actividad = _obtener_actividad()
-    
+
     if actividad is None:
         print(f"[demo escritorio] Aquí se abriría la app: {paquete}")
         return
@@ -237,3 +244,60 @@ def abrir_app(paquete: str) -> None:
     intent = administrador_paquetes.getLaunchIntentForPackage(paquete)
     if intent is not None:
         actividad.startActivity(intent)
+
+
+# ---------------------------------------------------------------------------
+# Service nativo de vigilancia (bloqueo en tiempo real)
+# ---------------------------------------------------------------------------
+
+def iniciar_servicio_monitor() -> None:
+    """Arranca ZenchiMonitorService como foreground service.
+
+    Este Service es el que realmente puede sacar al usuario de una app
+    en cuanto se cumple su límite, incluso si Zenchi (la Activity/Kivy)
+    está en segundo plano y su Clock está pausado. Debe llamarse una vez
+    al iniciar la app (en `build()`), y opcionalmente cada vez que Zenchi
+    vuelve a primer plano, por si el sistema mató el Service.
+    """
+    actividad = _obtener_actividad()
+
+    if actividad is None:
+        print("[demo escritorio] Aquí se arrancaría ZenchiMonitorService.")
+        return
+
+    try:
+        Intent = autoclass("android.content.Intent")
+        Version = autoclass("android.os.Build$VERSION")
+
+        ServiceClass = autoclass("org.zenchi.ZenchiMonitorService")
+        intent = Intent(actividad, ServiceClass)
+
+        if Version.SDK_INT >= 26:
+            actividad.startForegroundService(intent)
+        else:
+            actividad.startService(intent)
+
+        print("[INFO] ZenchiMonitorService iniciado")
+    except Exception as e:
+        print(f"[ERROR] No se pudo iniciar ZenchiMonitorService: {e}")
+
+
+def detener_servicio_monitor() -> None:
+    """Detiene ZenchiMonitorService. Normalmente no hace falta llamarlo:
+    el Service debe seguir vigilando incluso con Zenchi cerrado, que es
+    justo el objetivo. Útil solo para debugging o un botón de 'pausar
+    vigilancia' explícito."""
+    actividad = _obtener_actividad()
+
+    if actividad is None:
+        print("[demo escritorio] Aquí se detendría ZenchiMonitorService.")
+        return
+
+    try:
+        Intent = autoclass("android.content.Intent")
+        ServiceClass = autoclass("org.zenchi.ZenchiMonitorService")
+        intent = Intent(actividad, ServiceClass)
+        actividad.stopService(intent)
+        print("[INFO] ZenchiMonitorService detenido")
+    except Exception as e:
+        print(f"[ERROR] No se pudo detener ZenchiMonitorService: {e}")

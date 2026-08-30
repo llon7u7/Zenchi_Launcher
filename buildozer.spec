@@ -16,7 +16,7 @@ android.ndk = 26b
 android.ndk_api = 29
 android.archs = arm64-v8a
 android.accept_sdk_license = True
-android.permissions = SYSTEM_ALERT_WINDOW,PACKAGE_USAGE_STATS,QUERY_ALL_PACKAGES,POST_NOTIFICATIONS
+android.permissions = SYSTEM_ALERT_WINDOW,PACKAGE_USAGE_STATS,QUERY_ALL_PACKAGES,POST_NOTIFICATIONS,FOREGROUND_SERVICE,FOREGROUND_SERVICE_SPECIAL_USE
 android.add_src = android_src
 
 # SOLUCIÓN: Activa la configuración nativa de Launcher en Buildozer
