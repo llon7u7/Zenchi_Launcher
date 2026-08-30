@@ -177,7 +177,8 @@ public class ZenchiMonitorService extends Service {
         String paqueteHome = obtenerPaqueteHome();
         String paqueteZenchi = getPackageName();
 
-        String paqueteActual = detectarPaqueteEnPrimerPlano(paqueteHome, paqueteZenchi);
+        DeteccionForeground deteccion = detectarPaqueteEnPrimerPlano(paqueteHome, paqueteZenchi);
+        String paqueteActual = deteccion == null ? null : deteccion.paquete;
 
         if (paqueteActual == null || paqueteActual.equals(paqueteZenchi) || paqueteActual.equals(paqueteHome)) {
             // Usuario está en Zenchi/Home o no se pudo determinar nada:
@@ -198,10 +199,40 @@ public class ZenchiMonitorService extends Service {
         long ahora = System.currentTimeMillis();
 
         if (!paqueteActual.equals(ultimoPaqueteVisto)) {
+            // ARREGLO: antes, en este primer ciclo solo se "armaba" el
+            // cronómetro con `marcaDeTiempoUltimaMedicion = ahora` y se
+            // salía sin sumar nada — el usuario tenía que esperar a que
+            // pasara un ciclo COMPLETO (INTERVALO_MS) antes de que el
+            // tiempo empezara a contar, y encima ese punto de partida no
+            // correspondía al momento real de apertura.
+            //
+            // Ahora usamos el timestamp real del evento MOVE_TO_FOREGROUND
+            // (deteccion.timestampCambio) como punto de partida, y
+            // contabilizamos el tiempo transcurrido desde ese instante
+            // real ya en este mismo ciclo. Así el conteo "arranca
+            // automáticamente" en cuanto el Service detecta la app,
+            // reflejando el tiempo real que ya lleva abierta, en vez de
+            // perder el primer ciclo entero.
             ultimoPaqueteVisto = paqueteActual;
-            marcaDeTiempoUltimaMedicion = ahora;
+
+            long puntoDePartida = deteccion.timestampCambio;
+            // Clamp de seguridad: si el evento es viejo/atípico (p. ej. el
+            // Service se acaba de reiniciar y hay un evento de hace rato),
+            // no queremos sumar minutos de golpe. Limitamos el "tiempo ya
+            // transcurrido" a como máximo un intervalo de sondeo extra.
+            long maximoRazonable = ahora - INTERVALO_MS;
+            if (puntoDePartida < maximoRazonable) {
+                puntoDePartida = maximoRazonable;
+            }
+            if (puntoDePartida > ahora) {
+                puntoDePartida = ahora;
+            }
+
+            marcaDeTiempoUltimaMedicion = puntoDePartida;
             quitarOverlaySiExiste();
-            return; // primera medición para esta app: solo arranca el cronómetro
+            // No hacemos `return` aquí: seguimos abajo para sumar el
+            // tiempo ya transcurrido desde `puntoDePartida` en este mismo
+            // ciclo, en vez de esperar al siguiente.
         }
 
         long segundosTranscurridos = Math.max(0L, (ahora - marcaDeTiempoUltimaMedicion) / 1000L);
@@ -246,11 +277,28 @@ public class ZenchiMonitorService extends Service {
     // Python: UsageEvents primero, RunningTasks como respaldo)
     // -----------------------------------------------------------------
 
-    private String detectarPaqueteEnPrimerPlano(String paqueteHome, String paqueteZenchi) {
+    /** Resultado de detección: el paquete y el instante real (según el
+     * propio sistema, no nuestro reloj de sondeo) en que pasó a primer
+     * plano. Ese timestamp es la clave para que el cronómetro arranque
+     * desde el momento real de apertura, no desde que lo "notamos". */
+    private static final class DeteccionForeground {
+        final String paquete;
+        final long timestampCambio;
+
+        DeteccionForeground(String paquete, long timestampCambio) {
+            this.paquete = paquete;
+            this.timestampCambio = timestampCambio;
+        }
+    }
+
+    private DeteccionForeground detectarPaqueteEnPrimerPlano(String paqueteHome, String paqueteZenchi) {
+        // Declarada aquí (no dentro del try) porque el bloque de respaldo
+        // de más abajo (RunningTasks) también la necesita.
+        long ahora = System.currentTimeMillis();
+
         try {
             UsageStatsManager usageStatsManager =
                     (UsageStatsManager) getSystemService(Context.USAGE_STATS_SERVICE);
-            long ahora = System.currentTimeMillis();
             long inicio = ahora - (10 * 60 * 1000L);
 
             UsageEvents eventos = usageStatsManager.queryEvents(inicio, ahora);
@@ -258,6 +306,7 @@ public class ZenchiMonitorService extends Service {
                 UsageEvents.Event evento = new UsageEvents.Event();
                 String paqueteActivo = null;
                 int ultimoTipo = -1;
+                long timestampUltimoEvento = ahora;
 
                 while (eventos.hasNextEvent()) {
                     eventos.getNextEvent(evento);
@@ -266,6 +315,12 @@ public class ZenchiMonitorService extends Service {
                             || tipo == UsageEvents.Event.MOVE_TO_BACKGROUND) {
                         paqueteActivo = evento.getPackageName();
                         ultimoTipo = tipo;
+                        // Clave para el fix: guardamos el instante REAL en
+                        // que el sistema registró este cambio, no el
+                        // instante en que nosotros lo detectamos al
+                        // sondear (que siempre llega tarde por el
+                        // intervalo de polling).
+                        timestampUltimoEvento = evento.getTimeStamp();
                     }
                 }
 
@@ -273,7 +328,7 @@ public class ZenchiMonitorService extends Service {
                     if (ultimoTipo == UsageEvents.Event.MOVE_TO_BACKGROUND) {
                         return null;
                     }
-                    return paqueteActivo;
+                    return new DeteccionForeground(paqueteActivo, timestampUltimoEvento);
                 }
             }
         } catch (Exception e) {
@@ -282,11 +337,15 @@ public class ZenchiMonitorService extends Service {
 
         // Respaldo: RunningTasks (requiere que el Service tenga permisos
         // suficientes; en la práctica puede devolver el propio proceso).
+        // Aquí no tenemos un timestamp real del sistema, así que usamos
+        // "ahora" — el clamp de seguridad en revisarForeground() evita que
+        // esto cuente de más.
         try {
             ActivityManager am = (ActivityManager) getSystemService(Context.ACTIVITY_SERVICE);
             java.util.List<ActivityManager.RunningTaskInfo> tareas = am.getRunningTasks(1);
             if (tareas != null && !tareas.isEmpty()) {
-                return tareas.get(0).topActivity.getPackageName();
+                String paquete = tareas.get(0).topActivity.getPackageName();
+                return new DeteccionForeground(paquete, ahora);
             }
         } catch (Exception e) {
             // getRunningTasks está deprecado/restringido en versiones nuevas;
