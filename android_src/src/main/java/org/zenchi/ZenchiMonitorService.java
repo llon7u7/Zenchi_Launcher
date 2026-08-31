@@ -1,6 +1,7 @@
 package org.zenchi;
 
 import android.app.ActivityManager;
+import android.app.AppOpsManager;
 import android.app.Notification;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
@@ -163,8 +164,62 @@ public class ZenchiMonitorService extends Service {
                 .setContentText(texto)
                 .setSmallIcon(android.R.drawable.ic_lock_idle_lock)
                 .setOngoing(true)
+                .setOnlyAlertOnce(true) // evita sonido/vibración en cada actualización
                 .setPriority(Notification.PRIORITY_LOW);
         return builder.build();
+    }
+
+    /**
+     * Actualiza el texto de la notificación persistente. Esto es lo que
+     * te permite VER, sin necesidad de logcat/adb, si el Service
+     * realmente está detectando la app y sumando tiempo: si abres
+     * Instagram y el texto de la notificación no cambia ni avanza cada
+     * ~1.5s, algo está fallando antes de llegar aquí (revisa el permiso
+     * de UsageStats primero, es la causa más común).
+     */
+    private void actualizarNotificacion(String texto) {
+        try {
+            NotificationManager manager = getSystemService(NotificationManager.class);
+            manager.notify(NOTIF_ID, construirNotificacion(texto));
+        } catch (Exception e) {
+            Log.e(TAG, "No se pudo actualizar la notificación", e);
+        }
+    }
+
+    private String formatearTiempo(int segundos) {
+        segundos = Math.max(0, segundos);
+        int horas = segundos / 3600;
+        int minutos = (segundos % 3600) / 60;
+        int segs = segundos % 60;
+        if (horas > 0) {
+            return horas + "h " + minutos + "m";
+        }
+        if (minutos > 0) {
+            return minutos + "m " + segs + "s";
+        }
+        return segs + "s";
+    }
+
+    /**
+     * Verifica el permiso PACKAGE_USAGE_STATS directamente desde el
+     * Service. Si este permiso no está concedido, `queryEvents()` no
+     * lanza una excepción visible: simplemente devuelve resultados
+     * vacíos, y todo el sistema de conteo queda "muerto en silencio"
+     * sin ningún indicio de por qué. Por eso se verifica explícito y se
+     * refleja en la notificación en vez de dejarlo fallar calladamente.
+     */
+    private boolean tienePermisoUsageStats() {
+        try {
+            AppOpsManager appOps = (AppOpsManager) getSystemService(Context.APP_OPS_SERVICE);
+            int modo = appOps.checkOpNoThrow(
+                    AppOpsManager.OPSTR_GET_USAGE_STATS,
+                    getApplicationInfo().uid,
+                    getPackageName());
+            return modo == AppOpsManager.MODE_ALLOWED;
+        } catch (Exception e) {
+            Log.e(TAG, "Error verificando permiso UsageStats", e);
+            return false;
+        }
     }
 
     // -----------------------------------------------------------------
@@ -173,6 +228,16 @@ public class ZenchiMonitorService extends Service {
 
     private void revisarForeground() {
         SharedPreferences prefs = getSharedPreferences(PREFS_NOMBRE, Context.MODE_PRIVATE);
+
+        // Chequeo explícito de permiso: si falta, todo lo demás fallará en
+        // silencio (queryEvents devuelve vacío sin lanzar excepción). Mejor
+        // avisar claramente en la notificación que quedarse "contando
+        // nada" sin que el usuario sepa por qué.
+        if (!tienePermisoUsageStats()) {
+            actualizarNotificacion("⚠ Falta permiso de acceso a uso. Ajustes > Apps con acceso especial > Acceso a datos de uso > Zenchi.");
+            ultimoPaqueteVisto = null;
+            return;
+        }
 
         String paqueteHome = obtenerPaqueteHome();
         String paqueteZenchi = getPackageName();
@@ -185,6 +250,7 @@ public class ZenchiMonitorService extends Service {
             // no hay nada que vigilar/bloquear en este ciclo.
             ultimoPaqueteVisto = null;
             quitarOverlaySiExiste();
+            actualizarNotificacion("Sin app activa · vigilando");
             return;
         }
 
@@ -192,6 +258,7 @@ public class ZenchiMonitorService extends Service {
 
         if (bloqueadas.contains(paqueteActual)) {
             Log.d(TAG, "App ya bloqueada detectada en primer plano: " + paqueteActual);
+            actualizarNotificacion(nombreLegible(paqueteActual) + ": bloqueada, tiempo agotado");
             expulsarYBloquear(paqueteActual);
             return;
         }
@@ -255,10 +322,19 @@ public class ZenchiMonitorService extends Service {
 
         prefs.edit().putString(CLAVE_CACHE_TIEMPOS, cacheTiempos.toString()).apply();
 
+        int restante = Math.max(0, limite - tiempoAcumulado);
+        // Esta línea es la prueba visual de que el conteo funciona: el
+        // texto de "usados" debe subir cada ~1.5s mientras la app sigue
+        // abierta, y "quedan" debe bajar en la misma proporción.
+        actualizarNotificacion(
+                nombreLegible(paqueteActual) + ": " + formatearTiempo(tiempoAcumulado)
+                        + " usados · quedan " + formatearTiempo(restante));
+
         if (tiempoAcumulado >= limite) {
             Log.d(TAG, paqueteActual + " alcanzó su límite (" + tiempoAcumulado + "s / " + limite + "s)");
             bloqueadas.add(paqueteActual);
             guardarConjunto(prefs, CLAVE_APPS_BLOQUEADAS, bloqueadas);
+            actualizarNotificacion(nombreLegible(paqueteActual) + ": tiempo agotado, bloqueada");
             expulsarYBloquear(paqueteActual);
         }
     }
