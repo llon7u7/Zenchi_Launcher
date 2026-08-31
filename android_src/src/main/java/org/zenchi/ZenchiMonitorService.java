@@ -28,6 +28,7 @@ import android.view.WindowManager;
 import android.widget.Button;
 import android.widget.LinearLayout;
 import android.widget.TextView;
+import android.widget.Toast;
 
 import org.json.JSONArray;
 import org.json.JSONObject;
@@ -100,6 +101,19 @@ public class ZenchiMonitorService extends Service {
         super.onCreate();
         crearCanalNotificacion();
         startForeground(NOTIF_ID, construirNotificacion("Vigilando el uso de tus apps"));
+
+        // --- Diagnóstico: Toast en vez de/además de la notificación ---
+        // Un Toast NO requiere el permiso POST_NOTIFICATIONS (Android 13+),
+        // así que si la notificación persistente no aparece pero SÍ ves
+        // este Toast al abrir Zenchi, el problema es específicamente el
+        // permiso de notificaciones — no que el Service falló en arrancar.
+        mostrarToast("Zenchi: Service de vigilancia iniciado");
+
+        NotificationManager nm = getSystemService(NotificationManager.class);
+        if (nm != null && !nm.areNotificationsEnabled()) {
+            Log.w(TAG, "Las notificaciones de Zenchi están DESACTIVADAS a nivel de sistema");
+            mostrarToast("⚠ Notificaciones desactivadas para Zenchi. Actívalas en Ajustes > Apps > Zenchi > Notificaciones.");
+        }
 
         handler = new Handler(Looper.getMainLooper());
         tarea = new Runnable() {
@@ -177,6 +191,23 @@ public class ZenchiMonitorService extends Service {
      * ~1.5s, algo está fallando antes de llegar aquí (revisa el permiso
      * de UsageStats primero, es la causa más común).
      */
+    /**
+     * Muestra un Toast. A diferencia de las notificaciones, un Toast NO
+     * requiere el permiso POST_NOTIFICATIONS (Android 13+), así que sirve
+     * como señal de diagnóstico independiente: si ves este Toast pero
+     * nunca ves la notificación persistente, el Service SÍ está vivo — el
+     * problema es específicamente el permiso/canal de notificaciones.
+     */
+    private void mostrarToast(final String texto) {
+        Handler handlerParaToast = (handler != null) ? handler : new Handler(Looper.getMainLooper());
+        handlerParaToast.post(new Runnable() {
+            @Override
+            public void run() {
+                Toast.makeText(ZenchiMonitorService.this, texto, Toast.LENGTH_LONG).show();
+            }
+        });
+    }
+
     private void actualizarNotificacion(String texto) {
         try {
             NotificationManager manager = getSystemService(NotificationManager.class);

@@ -306,6 +306,16 @@ class ZenchiApp(App):
         boton_permiso.bind(on_release=self._verificar_permiso_usage_stats)
         botones.add_widget(boton_permiso)
 
+        # Botón de diagnóstico: lee directo de SharedPreferences lo que
+        # ZenchiMonitorService (el Service nativo) haya guardado, SIN
+        # depender de si la notificación del Service se ve o no. Es la
+        # forma más confiable de confirmar que el conteo en segundo plano
+        # realmente está funcionando: abre una app, espera unos segundos,
+        # vuelve a Zenchi y presiona este botón.
+        self.boton_estado_service = Button(text="Ver estado del Service")
+        self.boton_estado_service.bind(on_release=self._mostrar_estado_service)
+        botones.add_widget(self.boton_estado_service)
+
         raiz.add_widget(botones)
 
         self.sesion_activa = True
@@ -336,6 +346,15 @@ class ZenchiApp(App):
         self._refrescar_lista_apps()
 
         Clock.schedule_interval(self._actualizar, 1)
+
+        # Pide el permiso de notificaciones ANTES de arrancar el Service.
+        # En Android 13+ (API 33+), POST_NOTIFICATIONS es un permiso de
+        # runtime aparte: declararlo en el manifest no es suficiente. Si
+        # no se concede, la notificación persistente del Service (que es
+        # justo la forma más directa de ver si el conteo está corriendo)
+        # no se muestra, sin ningún error visible.
+        if not self._tiene_permiso_notificaciones():
+            self._solicitar_permiso_notificaciones()
 
         # Arranca el Service nativo que vigila el uso incluso cuando Zenchi
         # está en segundo plano (única forma real de bloquear una app
@@ -723,6 +742,64 @@ class ZenchiApp(App):
             print("[DEBUG] Permiso UsageStats ya concedido")
 
         self._solicitar_permisos_android()
+
+    def _mostrar_estado_service(self, *_args):
+        """Diagnóstico: muestra en pantalla lo que ZenchiMonitorService
+        (el Service nativo, en Java) guardó la última vez en
+        SharedPreferences — sin pasar por notificaciones ni por el
+        estado en memoria de Python.
+
+        Cómo usarlo para confirmar que el conteo en segundo plano
+        funciona:
+          1. Abre una app desde el cajón de Zenchi (ej. Instagram).
+          2. Espera 10-15 segundos dentro de esa app.
+          3. Vuelve a Zenchi (o deja que te regrese si se bloqueó).
+          4. Presiona "Ver estado del Service".
+
+        Si el paquete de esa app aparece con varios segundos acumulados,
+        el Service SÍ está contando correctamente, independientemente de
+        si viste o no la notificación persistente (que puede estar
+        oculta por el permiso POST_NOTIFICATIONS o por restricciones del
+        fabricante).
+        """
+        crudo = estado_compartido.leer_estado_del_service()
+
+        fecha = crudo.get("fecha") or "(sin datos aún — el Service no ha guardado nada)"
+        tiempos = crudo.get("cache_tiempos_por_app", {})
+        bloqueadas = crudo.get("apps_bloqueadas_hoy", [])
+
+        if not tiempos:
+            resumen_tiempos = "ninguna app con tiempo registrado todavía"
+        else:
+            partes = [f"{paq.split('.')[-1]}: {seg}s" for paq, seg in sorted(tiempos.items())]
+            resumen_tiempos = ", ".join(partes)
+
+        resumen_bloqueadas = ", ".join(p.split(".")[-1] for p in bloqueadas) if bloqueadas else "ninguna"
+
+        texto = (
+            f"[Service] fecha={fecha}\n"
+            f"Tiempos: {resumen_tiempos}\n"
+            f"Bloqueadas: {resumen_bloqueadas}"
+        )
+
+        print(f"[DEBUG] Estado crudo del Service: {crudo}")
+
+        contenedor = BoxLayout(orientation="vertical", spacing=dp(10), padding=dp(15))
+        etiqueta = Label(text=texto, halign="left", valign="top")
+        etiqueta.text_size = (dp(260), None)
+        contenedor.add_widget(etiqueta)
+
+        boton_cerrar = Button(text="Cerrar", size_hint_y=None, height=dp(40))
+        contenedor.add_widget(boton_cerrar)
+
+        popup = Popup(
+            title="Estado guardado por ZenchiMonitorService",
+            content=contenedor,
+            size_hint=(0.85, 0.6),
+            auto_dismiss=True,
+        )
+        boton_cerrar.bind(on_release=lambda _btn: popup.dismiss())
+        popup.open()
 
     def _actualizar_monitoreo_apps(self):
         """Actualiza el seguimiento de la app activa con un modelo más robusto para launcher Android."""
