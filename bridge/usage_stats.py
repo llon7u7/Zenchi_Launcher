@@ -163,7 +163,10 @@ def obtener_permiso_usage_stats() -> bool:
 
 
 def solicitar_permiso_usage_stats() -> None:
-    """Abre la pantalla de ajustes para que el usuario conceda el permiso UsageStats."""
+    """Abre la pantalla de ajustes para que el usuario conceda el permiso UsageStats.
+    
+    # NUEVO: Esta función ahora se llama automáticamente si el permiso no está concedido.
+    """
     actividad = _obtener_actividad()
 
     if actividad is None:
@@ -181,6 +184,52 @@ def solicitar_permiso_usage_stats() -> None:
 
     except Exception as e:
         print(f"[ERROR] Error al abrir ajustes UsageStats: {e}")
+
+
+def verificar_y_solicitar_permiso_usage_stats() -> bool:
+    """Verifica si el permiso PACKAGE_USAGE_STATS está concedido y, si no,
+    abre automáticamente la pantalla de ajustes para que el usuario lo otorgue.
+    
+    Returns:
+        True si el permiso ya estaba concedido, False si se tuvo que abrir la pantalla.
+    
+    # NUEVA FUNCIÓN: Reemplaza la verificación manual con solicitud automática.
+    """
+    actividad = _obtener_actividad()
+
+    if actividad is None:
+        print("[DEBUG] Modo desktop: simulando permiso de UsageStats concedido")
+        return True
+
+    try:
+        Context = autoclass("android.content.Context")
+        AppOpsManager = autoclass("android.app.AppOpsManager")
+
+        app_ops = cast(
+            "android.app.AppOpsManager",
+            actividad.getSystemService(Context.APP_OPS_SERVICE)
+        )
+
+        mode = app_ops.checkOpNoThrow(
+            AppOpsManager.OPSTR_GET_USAGE_STATS,
+            actividad.getApplicationInfo().uid,
+            actividad.getPackageName()
+        )
+
+        tiene_permiso = (mode == AppOpsManager.MODE_ALLOWED)
+
+        if not tiene_permiso:
+            print("[WARNING] No hay permiso PACKAGE_USAGE_STATS, abriendo ajustes automáticamente")
+            # NUEVO: Solicitar automáticamente sin esperar acción del usuario
+            solicitar_permiso_usage_stats()
+        else:
+            print("[DEBUG] Permiso PACKAGE_USAGE_STATS concedido")
+
+        return tiene_permiso
+
+    except Exception as e:
+        print(f"[ERROR] Error al verificar permiso UsageStats: {e}")
+        return False
 
 
 def obtener_estadisticas_uso(rango_horas: int = 24) -> list[EstadisticaUso]:
@@ -493,6 +542,155 @@ def formatear_tiempo(ms: int) -> str:
     segs_restantes = segundos % 60
 
     return f"{horas:02d}:{minutos:02d}:{segs_restantes:02d}"
+
+
+def obtener_tiempo_uso_app(paquete: str, rango_segundos: int = 60) -> int:
+    """Obtiene el tiempo REAL en primer plano que una app específica tuvo
+    durante los últimos N segundos usando UsageStatsManager.queryUsageStats.
+    
+    Esto reemplaza el contador manual que fallaba porque Kivy se pausa cuando
+    Zenchi pasa a segundo plano. Ahora consultamos directamente la API nativa
+    de Android que lleva la cuenta precisa del tiempo en primer plano.
+    
+    Args:
+        paquete: El nombre del paquete de la app (ej. "com.instagram.android")
+        rango_segundos: Ventana de tiempo hacia atrás para consultar (por defecto 60s)
+    
+    Returns:
+        Tiempo en primer plano en SEGUNDOS para esa app en la ventana especificada.
+        Retorna 0 si no hay datos o si no hay permiso.
+    
+    # NUEVA FUNCIÓN: Usa UsageStatsManager nativo para obtener tiempo real sin
+    # depender del loop de Kivy. Se llama desde on_resume() para saber cuánto
+    # tiempo estuvo abierta la app que el usuario acaba de cerrar.
+    """
+    actividad = _obtener_actividad()
+
+    if actividad is None:
+        print(f"[DEBUG] Modo desktop: simulando tiempo de uso para {paquete}")
+        return 30  # Mock para pruebas en escritorio
+
+    if not obtener_permiso_usage_stats():
+        print(f"[WARNING] Sin permiso UsageStats, no se puede obtener tiempo para {paquete}")
+        return 0
+
+    try:
+        Context = autoclass("android.content.Context")
+        UsageStatsManager = autoclass("android.app.usage.UsageStatsManager")
+
+        usage_stats_manager = cast(
+            "android.app.usage.UsageStatsManager",
+            actividad.getSystemService(Context.USAGE_STATS_SERVICE)
+        )
+
+        ahora_ms = int(datetime.now().timestamp() * 1000)
+        inicio_ms = ahora_ms - (rango_segundos * 1000)
+
+        # QueryUsageStats nos da el tiempo TOTAL acumulado en primer plano
+        # para cada app en el rango especificado
+        stats = usage_stats_manager.queryUsageStats(
+            UsageStatsManager.INTERVAL_BEST,
+            inicio_ms,
+            ahora_ms
+        )
+
+        if stats is None or stats.size() == 0:
+            print(f"[DEBUG] No hay estadísticas de uso disponibles para {paquete}")
+            return 0
+
+        for i in range(stats.size()):
+            usage_stat = stats.get(i)
+            stat_paquete = str(usage_stat.getPackageName())
+            
+            if stat_paquete == paquete:
+                # getTotalTimeInForeground devuelve milisegundos
+                tiempo_ms = int(usage_stat.getTotalTimeInForeground())
+                tiempo_segundos = tiempo_ms // 1000
+                print(f"[DEBUG] UsageStats -> {paquete}: {tiempo_segundos}s en primer plano (últimos {rango_segundos}s)")
+                return tiempo_segundos
+
+        print(f"[DEBUG] {paquete} no aparece en UsageStats para la ventana consultada")
+        return 0
+
+    except Exception as e:
+        print(f"[ERROR] Error al obtener tiempo de uso para {paquete}: {e}")
+        import traceback
+        traceback.print_exc()
+        return 0
+
+
+def obtener_tiempos_uso_apps(paquetes: list[str], rango_segundos: int = 60) -> dict[str, int]:
+    """Obtiene los tiempos reales de uso en primer plano para MÚLTIPLES apps.
+    
+    Es más eficiente que llamar obtener_tiempo_uso_app() individualmente
+    porque hace una sola consulta a UsageStatsManager y filtra los resultados.
+    
+    Args:
+        paquetes: Lista de nombres de paquetes a consultar
+        rango_segundos: Ventana de tiempo hacia atrás para consultar
+    
+    Returns:
+        Diccionario {paquete: segundos_en_primer_plano}
+    
+    # NUEVA FUNCIÓN: Optimizada para consultar múltiples apps de una vez.
+    """
+    actividad = _obtener_actividad()
+
+    if actividad is None:
+        print("[DEBUG] Modo desktop: devolviendo tiempos mock")
+        return {p: 30 for p in paquetes}
+
+    if not obtener_permiso_usage_stats():
+        print("[WARNING] Sin permiso UsageStats, retornando diccionario vacío")
+        return {}
+
+    try:
+        Context = autoclass("android.content.Context")
+        UsageStatsManager = autoclass("android.app.usage.UsageStatsManager")
+
+        usage_stats_manager = cast(
+            "android.app.usage.UsageStatsManager",
+            actividad.getSystemService(Context.USAGE_STATS_SERVICE)
+        )
+
+        ahora_ms = int(datetime.now().timestamp() * 1000)
+        inicio_ms = ahora_ms - (rango_segundos * 1000)
+
+        stats = usage_stats_manager.queryUsageStats(
+            UsageStatsManager.INTERVAL_BEST,
+            inicio_ms,
+            ahora_ms
+        )
+
+        if stats is None or stats.size() == 0:
+            print("[DEBUG] No hay estadísticas de uso disponibles")
+            return {}
+
+        resultados = {}
+        paquetes_set = set(paquetes)
+
+        for i in range(stats.size()):
+            usage_stat = stats.get(i)
+            stat_paquete = str(usage_stat.getPackageName())
+            
+            if stat_paquete in paquetes_set:
+                tiempo_ms = int(usage_stat.getTotalTimeInForeground())
+                tiempo_segundos = tiempo_ms // 1000
+                resultados[stat_paquete] = tiempo_segundos
+                print(f"[DEBUG] UsageStats -> {stat_paquete}: {tiempo_segundos}s en primer plano")
+
+        # Para paquetes que no aparecen en los resultados, poner 0
+        for paquete in paquetes:
+            if paquete not in resultados:
+                resultados[paquete] = 0
+
+        return resultados
+
+    except Exception as e:
+        print(f"[ERROR] Error al obtener tiempos de uso: {e}")
+        import traceback
+        traceback.print_exc()
+        return {}
 
 
 # Demo rápida para probar en consola
