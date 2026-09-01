@@ -59,6 +59,8 @@ from bridge.usage_stats import (
     detectar_app_en_primer_plano,
     obtener_permiso_usage_stats,
     solicitar_permiso_usage_stats,
+    verificar_y_solicitar_permiso_usage_stats,  # NUEVO: verifica y solicita automáticamente
+    obtener_tiempo_uso_app,  # NUEVO: obtiene tiempo real desde UsageStatsManager
 )
 from bridge import estado_compartido
 
@@ -379,8 +381,49 @@ class ZenchiApp(App):
         la app que tenía abierta, o el Service lo mandó al Home tras un
         bloqueo). Aquí es donde nos enteramos de todo lo que pasó mientras
         el Clock de Kivy estaba pausado.
+        
+        # NUEVO: Ahora usamos UsageStatsManager nativo para obtener el tiempo
+        REAL que la app recién cerrada estuvo en primer plano, en lugar de
+        depender del contador manual que fallaba porque Kivy se pausa.
         """
         self._reiniciar_si_nuevo_dia()
+
+        # NUEVO: Verificar y solicitar automáticamente el permiso UsageStats
+        # si no está concedido. Esto asegura que podemos consultar los tiempos
+        # reales de uso cada vez que el usuario regresa al launcher.
+        verificar_y_solicitar_permiso_usage_stats()
+
+        # NUEVO: Obtener el tiempo real de la última app que estuvo en primer plano
+        # usando la API nativa de Android (UsageStatsManager), eliminando la
+        # dependencia del contador manual de Kivy que fallaba en segundo plano.
+        if self.ultima_app_abierta and self.ultima_app_abierta != self._obtener_paquete_zenchi():
+            # Consultar UsageStatsManager para obtener el tiempo REAL acumulado
+            # desde que se abrió la app hasta ahora (cuando el usuario regresó)
+            tiempo_real = obtener_tiempo_uso_app(
+                paquete=self.ultima_app_abierta,
+                rango_segundos=300  # Ventana de 5 minutos para cubrir sesiones típicas
+            )
+            
+            if tiempo_real > 0:
+                # Actualizar el cache con el tiempo obtenido de UsageStatsManager
+                tiempo_anterior = self.cache_tiempos_por_app.get(self.ultima_app_abierta, 0)
+                self.cache_tiempos_por_app[self.ultima_app_abierta] = tiempo_anterior + tiempo_real
+                self.tiempo_acumulado_hoy = sum(self.cache_tiempos_por_app.values())
+                self.segundos_usados = self.tiempo_acumulado_hoy
+                print(f"[DEBUG] on_resume: {self.ultima_app_abierta} tuvo {tiempo_real}s reales de uso")
+                
+                # Guardar inmediatamente el estado actualizado
+                self._guardar_estado_diario()
+                
+                # Verificar si la app alcanzó su límite con el tiempo real obtenido
+                limite_diario_actual, limite_app_actual = self._obtener_limites_dinamicos()
+                if self.cache_tiempos_por_app[self.ultima_app_abierta] >= limite_app_actual:
+                    # La app superó su límite según UsageStatsManager
+                    self.apps_bloqueadas_hoy.add(self.ultima_app_abierta)
+                    self.paquete_restringido_actual = self.ultima_app_abierta
+                    self._cerrar_app_actual()
+                    self._refrescar_lista_apps()
+                    return True
 
         bloqueadas_antes = set(self.apps_bloqueadas_hoy)
         estado_compartido.fusionar_estado_en(self)
@@ -731,13 +774,19 @@ class ZenchiApp(App):
             solicitar_permiso_usage_stats()
 
     def _verificar_permiso_usage_stats(self, *_args):
-        """Verifica y solicita permiso UsageStats si es necesario."""
+        """Verifica y solicita permiso UsageStats si es necesario.
+        
+        # NUEVO: Ahora usa la función verificar_y_solicitar_permiso_usage_stats()
+        que abre automáticamente la pantalla de ajustes si el permiso no está
+        concedido, en lugar de esperar una acción manual del usuario.
+        """
         print("[DEBUG] Verificando permiso UsageStats...")
-        self.tiene_permiso_usage_stats = obtener_permiso_usage_stats()
+        # NUEVO: Usar la nueva función que verifica y solicita automáticamente
+        self.tiene_permiso_usage_stats = verificar_y_solicitar_permiso_usage_stats()
 
         if not self.tiene_permiso_usage_stats:
-            print("[INFO] Solicitando permiso UsageStats al usuario")
-            solicitar_permiso_usage_stats()
+            print("[INFO] Permiso no concedido - se abrió automáticamente la pantalla de ajustes")
+            print("[INFO] El usuario debe habilitarlo en: Ajustes > Acceso especial > Uso de datos")
         else:
             print("[DEBUG] Permiso UsageStats ya concedido")
 
