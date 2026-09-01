@@ -6,7 +6,7 @@ source.dir = .
 source.include_exts = py,kv,png,jpg,json
 source.exclude_dirs = .venv,.venv311,__pycache__,bin,.git
 version = 0.1.0
-requirements = python3,kivy,kivymd,pyjnius,plyer
+requirements = python3,kivy,kivymd,pyjnius
 orientation = portrait
 fullscreen = 0
 
@@ -16,6 +16,9 @@ android.ndk = 26b
 android.ndk_api = 29
 android.archs = arm64-v8a
 android.accept_sdk_license = True
+# ACTUALIZACIÓN: se agregaron FOREGROUND_SERVICE y FOREGROUND_SERVICE_SPECIAL_USE
+# para que ZenchiMonitorService pueda vigilar/bloquear apps en tiempo real
+# incluso con Zenchi en segundo plano (ver android_src/AndroidManifest.xml).
 android.permissions = SYSTEM_ALERT_WINDOW,PACKAGE_USAGE_STATS,QUERY_ALL_PACKAGES,POST_NOTIFICATIONS,FOREGROUND_SERVICE,FOREGROUND_SERVICE_SPECIAL_USE
 android.add_src = android_src
 
