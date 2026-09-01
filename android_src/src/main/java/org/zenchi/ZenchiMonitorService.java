@@ -87,6 +87,28 @@ public class ZenchiMonitorService extends Service {
 
     private static final int LIMITE_APP_DEFECTO_SEGUNDOS = 30 * 60;
 
+    /**
+     * Normaliza el nombre de un paquete eliminando sufijos de procesos secundarios.
+     * Muchas apps (como TikTok, Instagram, etc.) usan múltiples procesos con sufijos
+     * como ':push', ':download', ':webview', etc. Esta función extrae el paquete base.
+     * 
+     * Ejemplos:
+     *   'com.zhiliaoapp.musically' -> 'com.zhiliaoapp.musically'
+     *   'com.zhiliaoapp.musically:push' -> 'com.zhiliaoapp.musically'
+     *   'com.instagram.android:webview' -> 'com.instagram.android'
+     */
+    private String normalizarPaquete(String paquete) {
+        if (paquete == null || paquete.isEmpty()) {
+            return paquete;
+        }
+        // Eliminar sufijos de procesos secundarios (todo lo después de ':')
+        int indiceDosPuntos = paquete.indexOf(':');
+        if (indiceDosPuntos != -1) {
+            paquete = paquete.substring(0, indiceDosPuntos);
+        }
+        return paquete;
+    }
+
     private Handler handler;
     private Runnable tarea;
 
@@ -287,16 +309,19 @@ public class ZenchiMonitorService extends Service {
 
         Set<String> bloqueadas = leerConjunto(prefs, CLAVE_APPS_BLOQUEADAS);
 
-        if (bloqueadas.contains(paqueteActual)) {
-            Log.d(TAG, "App ya bloqueada detectada en primer plano: " + paqueteActual);
-            actualizarNotificacion(nombreLegible(paqueteActual) + ": bloqueada, tiempo agotado");
-            expulsarYBloquear(paqueteActual);
+        // Normalizar paquete para comparación consistente con procesos múltiples
+        String paqueteNormalizado = normalizarPaquete(paqueteActual);
+        
+        if (bloqueadas.contains(paqueteNormalizado)) {
+            Log.d(TAG, "App ya bloqueada detectada en primer plano: " + paqueteNormalizado);
+            actualizarNotificacion(nombreLegible(paqueteNormalizado) + ": bloqueada, tiempo agotado");
+            expulsarYBloquear(paqueteNormalizado);
             return;
         }
 
         long ahora = System.currentTimeMillis();
 
-        if (!paqueteActual.equals(ultimoPaqueteVisto)) {
+        if (!paqueteNormalizado.equals(ultimoPaqueteVisto)) {
             // ARREGLO: antes, en este primer ciclo solo se "armaba" el
             // cronómetro con `marcaDeTiempoUltimaMedicion = ahora` y se
             // salía sin sumar nada — el usuario tenía que esperar a que
@@ -311,7 +336,7 @@ public class ZenchiMonitorService extends Service {
             // automáticamente" en cuanto el Service detecta la app,
             // reflejando el tiempo real que ya lleva abierta, en vez de
             // perder el primer ciclo entero.
-            ultimoPaqueteVisto = paqueteActual;
+            ultimoPaqueteVisto = paqueteNormalizado;
 
             long puntoDePartida = deteccion.timestampCambio;
             // Clamp de seguridad: si el evento es viejo/atípico (p. ej. el
@@ -341,15 +366,15 @@ public class ZenchiMonitorService extends Service {
         }
 
         JSONObject cacheTiempos = leerObjeto(prefs, CLAVE_CACHE_TIEMPOS);
-        int tiempoAcumulado = cacheTiempos.optInt(paqueteActual, 0) + (int) segundosTranscurridos;
+        int tiempoAcumulado = cacheTiempos.optInt(paqueteNormalizado, 0) + (int) segundosTranscurridos;
 
         try {
-            cacheTiempos.put(paqueteActual, tiempoAcumulado);
+            cacheTiempos.put(paqueteNormalizado, tiempoAcumulado);
         } catch (Exception e) {
             Log.e(TAG, "No se pudo actualizar cache de tiempos", e);
         }
 
-        int limite = obtenerLimiteParaPaquete(prefs, paqueteActual);
+        int limite = obtenerLimiteParaPaquete(prefs, paqueteNormalizado);
 
         prefs.edit().putString(CLAVE_CACHE_TIEMPOS, cacheTiempos.toString()).apply();
 
@@ -358,22 +383,24 @@ public class ZenchiMonitorService extends Service {
         // texto de "usados" debe subir cada ~1.5s mientras la app sigue
         // abierta, y "quedan" debe bajar en la misma proporción.
         actualizarNotificacion(
-                nombreLegible(paqueteActual) + ": " + formatearTiempo(tiempoAcumulado)
+                nombreLegible(paqueteNormalizado) + ": " + formatearTiempo(tiempoAcumulado)
                         + " usados · quedan " + formatearTiempo(restante));
 
         if (tiempoAcumulado >= limite) {
-            Log.d(TAG, paqueteActual + " alcanzó su límite (" + tiempoAcumulado + "s / " + limite + "s)");
-            bloqueadas.add(paqueteActual);
+            Log.d(TAG, paqueteNormalizado + " alcanzó su límite (" + tiempoAcumulado + "s / " + limite + "s)");
+            bloqueadas.add(paqueteNormalizado);
             guardarConjunto(prefs, CLAVE_APPS_BLOQUEADAS, bloqueadas);
-            actualizarNotificacion(nombreLegible(paqueteActual) + ": tiempo agotado, bloqueada");
-            expulsarYBloquear(paqueteActual);
+            actualizarNotificacion(nombreLegible(paqueteNormalizado) + ": tiempo agotado, bloqueada");
+            expulsarYBloquear(paqueteNormalizado);
         }
     }
 
     private int obtenerLimiteParaPaquete(SharedPreferences prefs, String paquete) {
+        // Normalizar paquete para consistencia con límites guardados
+        String paqueteNormalizado = normalizarPaquete(paquete);
         JSONObject limitesPersonalizados = leerObjeto(prefs, CLAVE_LIMITES_PERSONALIZADOS);
-        if (limitesPersonalizados.has(paquete)) {
-            return limitesPersonalizados.optInt(paquete, LIMITE_APP_DEFECTO_SEGUNDOS);
+        if (limitesPersonalizados.has(paqueteNormalizado)) {
+            return limitesPersonalizados.optInt(paqueteNormalizado, LIMITE_APP_DEFECTO_SEGUNDOS);
         }
         int limiteDefecto = prefs.getInt(CLAVE_LIMITE_APP_DEFECTO, LIMITE_APP_DEFECTO_SEGUNDOS);
         return limiteDefecto > 0 ? limiteDefecto : LIMITE_APP_DEFECTO_SEGUNDOS;
@@ -420,7 +447,7 @@ public class ZenchiMonitorService extends Service {
                     int tipo = evento.getEventType();
                     if (tipo == UsageEvents.Event.MOVE_TO_FOREGROUND
                             || tipo == UsageEvents.Event.MOVE_TO_BACKGROUND) {
-                        paqueteActivo = evento.getPackageName();
+                        paqueteActivo = normalizarPaquete(evento.getPackageName());
                         ultimoTipo = tipo;
                         // Clave para el fix: guardamos el instante REAL en
                         // que el sistema registró este cambio, no el
@@ -451,7 +478,7 @@ public class ZenchiMonitorService extends Service {
             ActivityManager am = (ActivityManager) getSystemService(Context.ACTIVITY_SERVICE);
             java.util.List<ActivityManager.RunningTaskInfo> tareas = am.getRunningTasks(1);
             if (tareas != null && !tareas.isEmpty()) {
-                String paquete = tareas.get(0).topActivity.getPackageName();
+                String paquete = normalizarPaquete(tareas.get(0).topActivity.getPackageName());
                 return new DeteccionForeground(paquete, ahora);
             }
         } catch (Exception e) {
