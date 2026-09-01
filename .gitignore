@@ -1,4 +1,28 @@
-# Examples 1 and 2 show that only source/config files were modified, so no .gitignore content is needed
+```
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
 
-# Source files: .md, .py
-# No build artifacts, dependencies, or temp files detected
+# Environment
+.venv/
+venv/
+.env
+.env.local
+*.env.*
+
+# Logs and temp files
+*.log
+*.tmp
+*.swp
+
+# Editors
+.vscode/
+.idea/
+
+# Build artifacts
+dist/
+build/
+target/
+```
