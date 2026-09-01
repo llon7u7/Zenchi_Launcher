@@ -76,6 +76,27 @@ class AppState:
     timestamp_ultimo_cambio: int
 
 
+def _normalizar_paquete(paquete: str) -> str:
+    """Normaliza el nombre de un paquete eliminando sufijos de procesos secundarios.
+    
+    Muchas apps (como TikTok, Instagram, etc.) usan múltiples procesos con sufijos
+    como ':push', ':download', ':webview', etc. Esta función extrae el paquete base.
+    
+    Ejemplos:
+        'com.zhiliaoapp.musically' -> 'com.zhiliaoapp.musically'
+        'com.zhiliaoapp.musically:push' -> 'com.zhiliaoapp.musically'
+        'com.instagram.android:webview' -> 'com.instagram.android'
+    """
+    if not paquete:
+        return paquete
+    
+    # Eliminar sufijos de procesos secundarios (todo lo después de ':')
+    if ':' in paquete:
+        paquete = paquete.split(':')[0]
+    
+    return paquete
+
+
 def _obtener_actividad():
     """Obtiene la actividad actual de Python en Android para Buildozer."""
     if not HAY_ANDROID:
@@ -237,8 +258,16 @@ def obtener_estadisticas_uso(rango_horas: int = 24) -> list[EstadisticaUso]:
     actividad = _obtener_actividad()
 
     if actividad is None:
-        print("[DEBUG] Modo desktop: devolviendo estadísticas mock")
+        print("[DEBUG] Modo desktop: devolviendo estadísticas mock con procesos múltiples")
+        # Simular TikTok con múltiples procesos que deben agruparse
         return [
+            EstadisticaUso(
+                paquete="com.zhiliaoapp.musically",  # Paquete base normalizado
+                nombre_app="TikTok",
+                tiempo_total_ms=5400000,  # 90 minutos acumulados de 3 procesos
+                ultima_vez_usado=int(datetime.now().timestamp() * 1000),
+                tiempo_en_primer_plano_ms=5400000
+            ),
             EstadisticaUso(
                 paquete="com.instagram.android",
                 nombre_app="Instagram",
@@ -284,29 +313,43 @@ def obtener_estadisticas_uso(rango_horas: int = 24) -> list[EstadisticaUso]:
         pm = actividad.getPackageManager()
 
         resultados: list[EstadisticaUso] = []
+        mapa_resultados: dict[str, EstadisticaUso] = {}
 
         for i in range(stats.size()):
             usage_stat = stats.get(i)
-            paquete = str(usage_stat.getPackageName())
+            paquete_original = str(usage_stat.getPackageName())
+            # Normalizar paquete para agrupar procesos múltiples
+            paquete = _normalizar_paquete(paquete_original)
             tiempo_total = int(usage_stat.getTotalTimeInForeground())
             ultima_vez = int(usage_stat.getLastTimeUsed())
 
             try:
-                app_info = pm.getApplicationInfo(paquete, 0)
+                app_info = pm.getApplicationInfo(paquete_original, 0)
                 nombre_app = str(pm.getApplicationLabel(app_info))
             except Exception:
                 nombre_app = paquete
 
             if tiempo_total > 0:
-                resultados.append(
-                    EstadisticaUso(
+                # Si ya existe este paquete (por procesos múltiples), acumular tiempos
+                if paquete in mapa_resultados:
+                    existente = mapa_resultados[paquete]
+                    mapa_resultados[paquete] = EstadisticaUso(
+                        paquete=paquete,
+                        nombre_app=existente.nombre_app,
+                        tiempo_total_ms=existente.tiempo_total_ms + tiempo_total,
+                        ultima_vez_usado=max(existente.ultima_vez_usado, ultima_vez),
+                        tiempo_en_primer_plano_ms=existente.tiempo_en_primer_plano_ms + tiempo_total
+                    )
+                else:
+                    mapa_resultados[paquete] = EstadisticaUso(
                         paquete=paquete,
                         nombre_app=nombre_app,
                         tiempo_total_ms=tiempo_total,
                         ultima_vez_usado=ultima_vez,
                         tiempo_en_primer_plano_ms=tiempo_total
                     )
-                )
+
+        resultados = list(mapa_resultados.values())
 
         resultados.sort(key=lambda x: x.tiempo_total_ms, reverse=True)
 
@@ -387,8 +430,10 @@ def detectar_app_en_primer_plano() -> AppState:
                         paquete = str(evento.getPackageName())
                         tiempo = int(evento.getTimeStamp())
                         if paquete:
+                            # Normalizar paquete para manejar procesos múltiples
+                            paquete_normalizado = _normalizar_paquete(paquete)
                             ultimo_timestamp = tiempo
-                            paquete_activo = paquete
+                            paquete_activo = paquete_normalizado
                             ultimo_tipo = tipo_evento
 
                 if paquete_activo is not None:
@@ -420,6 +465,8 @@ def detectar_app_en_primer_plano() -> AppState:
                 componente = getattr(tarea_superior, "topActivity", None)
                 if componente is not None:
                     paquete_activo = str(componente.getPackageName())
+                    # Normalizar paquete para manejar procesos múltiples
+                    paquete_activo = _normalizar_paquete(paquete_activo)
                     if paquete_activo and not _es_home(paquete_activo):
                         print(f"[DEBUG] RunningTasks -> {paquete_activo}")
                         return AppState(
@@ -449,6 +496,8 @@ def detectar_app_en_primer_plano() -> AppState:
                         continue
                     for paquete in pkg_list:
                         nombre_pkg = str(paquete)
+                        # Normalizar paquete para manejar procesos múltiples
+                        nombre_pkg = _normalizar_paquete(nombre_pkg)
                         if nombre_pkg and not _es_home(nombre_pkg):
                             print(f"[DEBUG] RunningAppProcesses (IMPORTANCE_FOREGROUND exacto) -> {nombre_pkg}")
                             return AppState(
@@ -474,9 +523,11 @@ def detectar_app_en_primer_plano() -> AppState:
                 usage_stat = stats.get(i)
                 ultima_vez = int(usage_stat.getLastTimeUsed())
                 paquete = str(usage_stat.getPackageName())
-                if ultima_vez > ultimo_timestamp and paquete and not _es_home(paquete):
+                # Normalizar paquete para manejar procesos múltiples
+                paquete_normalizado = _normalizar_paquete(paquete)
+                if ultima_vez > ultimo_timestamp and paquete_normalizado and not _es_home(paquete_normalizado):
                     ultimo_timestamp = ultima_vez
-                    paquete_activo = paquete
+                    paquete_activo = paquete_normalizado
 
             # Si esa "última vez usada" es muy vieja (más de 15s), no es
             # confiable como señal de "está en pantalla ahora mismo".
