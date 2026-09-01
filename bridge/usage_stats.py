@@ -544,9 +544,9 @@ def formatear_tiempo(ms: int) -> str:
     return f"{horas:02d}:{minutos:02d}:{segs_restantes:02d}"
 
 
-def obtener_tiempo_uso_app(paquete: str, rango_segundos: int = 60) -> int:
+def obtener_tiempo_uso_app(paquete: str, rango_segundos: int = 900) -> int:
     """Obtiene el tiempo REAL en primer plano que una app específica tuvo
-    durante los últimos N segundos usando UsageStatsManager.queryUsageStats.
+    durante los últimos N segundos usando UsageStatsManager.queryEvents.
     
     Esto reemplaza el contador manual que fallaba porque Kivy se pausa cuando
     Zenchi pasa a segundo plano. Ahora consultamos directamente la API nativa
@@ -554,7 +554,10 @@ def obtener_tiempo_uso_app(paquete: str, rango_segundos: int = 60) -> int:
     
     Args:
         paquete: El nombre del paquete de la app (ej. "com.instagram.android")
-        rango_segundos: Ventana de tiempo hacia atrás para consultar (por defecto 60s)
+        rango_segundos: Ventana de tiempo hacia atrás para consultar. 
+                        Por defecto 900s (15 min) para asegurar que UsageStats
+                        haya consolidado los datos. Si el tiempo sigue en 0,
+                        aumentar a 1800 (30 min) o 3600 (1 hora).
     
     Returns:
         Tiempo en primer plano en SEGUNDOS para esa app en la ventana especificada.
@@ -563,6 +566,11 @@ def obtener_tiempo_uso_app(paquete: str, rango_segundos: int = 60) -> int:
     # NUEVA FUNCIÓN: Usa UsageStatsManager nativo para obtener tiempo real sin
     # depender del loop de Kivy. Se llama desde on_resume() para saber cuánto
     # tiempo estuvo abierta la app que el usuario acaba de cerrar.
+    
+    # FIX (tiempo = 0s): Se aumentó el rango por defecto de 60s a 900s (15 min)
+    # porque UsageStatsManager.consolidar datos con latencia. Con 60s, Android
+    # aún no había procesado las estadísticas y devolvía 0. Ahora usamos
+    # queryEvents() que es más preciso y en tiempo real que queryUsageStats().
     """
     actividad = _obtener_actividad()
 
@@ -577,6 +585,7 @@ def obtener_tiempo_uso_app(paquete: str, rango_segundos: int = 60) -> int:
     try:
         Context = autoclass("android.content.Context")
         UsageStatsManager = autoclass("android.app.usage.UsageStatsManager")
+        UsageEvents = autoclass("android.app.usage.UsageEvents")
 
         usage_stats_manager = cast(
             "android.app.usage.UsageStatsManager",
@@ -586,8 +595,50 @@ def obtener_tiempo_uso_app(paquete: str, rango_segundos: int = 60) -> int:
         ahora_ms = int(datetime.now().timestamp() * 1000)
         inicio_ms = ahora_ms - (rango_segundos * 1000)
 
-        # QueryUsageStats nos da el tiempo TOTAL acumulado en primer plano
-        # para cada app en el rango especificado
+        # --- MÉTODO PRIMARIO: queryEvents() es más preciso y en tiempo real ---
+        # queryUsageStats() tiene latencia de consolidación (puede tardar minutos
+        # en actualizar getTotalTimeInForeground()). queryEvents() devuelve los
+        # eventos crudos MOVE_TO_FOREGROUND / MOVE_TO_BACKGROUND inmediatamente.
+        try:
+            eventos = usage_stats_manager.queryEvents(inicio_ms, ahora_ms)
+            if eventos is not None and eventos.hasNextEvent():
+                evento = UsageEvents.Event()
+                ultimo_foreground_ms = None
+                ultimo_background_ms = None
+                
+                # Iterar todos los eventos para encontrar el último par FOREGROUND/BACKGROUND
+                while eventos.hasNextEvent():
+                    eventos.getNextEvent(evento)
+                    tipo_evento = evento.getEventType()
+                    evento_paquete = str(evento.getPackageName())
+                    evento_tiempo = int(evento.getTimeStamp())
+                    
+                    if evento_paquete == paquete:
+                        if tipo_evento == UsageEvents.Event.MOVE_TO_FOREGROUND:
+                            ultimo_foreground_ms = evento_tiempo
+                        elif tipo_evento == UsageEvents.Event.MOVE_TO_BACKGROUND:
+                            ultimo_background_ms = evento_tiempo
+                
+                # Calcular tiempo basado en los eventos encontrados
+                if ultimo_foreground_ms is not None:
+                    if ultimo_background_ms is not None and ultimo_background_ms > ultimo_foreground_ms:
+                        # La app fue cerrada (evento BACKGROUND recibido)
+                        tiempo_ms = ultimo_background_ms - ultimo_foreground_ms
+                        tiempo_segundos = max(0, tiempo_ms // 1000)
+                        print(f"[DEBUG] QueryEvents -> {paquete}: {tiempo_segundos}s (FOREGROUND@{ultimo_foreground_ms} -> BACKGROUND@{ultimo_background_ms})")
+                        return tiempo_segundos
+                    else:
+                        # La app sigue abierta o no hubo evento BACKGROUND
+                        # Calcular desde último FOREGROUND hasta AHORA
+                        tiempo_ms = ahora_ms - ultimo_foreground_ms
+                        tiempo_segundos = max(0, tiempo_ms // 1000)
+                        print(f"[DEBUG] QueryEvents -> {paquete}: {tiempo_segundos}s (FOREGROUND@{ultimo_foreground_ms} -> AHORA, sin BACKGROUND)")
+                        return tiempo_segundos
+                        
+        except Exception as e:
+            print(f"[WARNING] Error en queryEvents: {e}, fallback a queryUsageStats")
+
+        # --- FALLBACK: queryUsageStats() si queryEvents falla o no encuentra nada ---
         stats = usage_stats_manager.queryUsageStats(
             UsageStatsManager.INTERVAL_BEST,
             inicio_ms,
@@ -604,12 +655,13 @@ def obtener_tiempo_uso_app(paquete: str, rango_segundos: int = 60) -> int:
             
             if stat_paquete == paquete:
                 # getTotalTimeInForeground devuelve milisegundos
+                # NOTA: Este valor puede tener latencia de consolidación
                 tiempo_ms = int(usage_stat.getTotalTimeInForeground())
                 tiempo_segundos = tiempo_ms // 1000
-                print(f"[DEBUG] UsageStats -> {paquete}: {tiempo_segundos}s en primer plano (últimos {rango_segundos}s)")
+                print(f"[DEBUG] UsageStats (fallback) -> {paquete}: {tiempo_segundos}s en primer plano (últimos {rango_segundos}s)")
                 return tiempo_segundos
 
-        print(f"[DEBUG] {paquete} no aparece en UsageStats para la ventana consultada")
+        print(f"[DEBUG] {paquete} no aparece en UsageStats para la ventana consultada ({rango_segundos}s)")
         return 0
 
     except Exception as e:

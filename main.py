@@ -358,6 +358,14 @@ class ZenchiApp(App):
         if not self._tiene_permiso_notificaciones():
             self._solicitar_permiso_notificaciones()
 
+        # --- FIX: Verificar permiso UsageStats ANTES de iniciar el Service ---
+        # El Service nativo (ZenchiMonitorService.java) depende del permiso
+        # PACKAGE_USAGE_STATS para funcionar. Si no está concedido, el Service
+        # arranca pero no puede leer UsageStats y muestra un warning en su
+        # notificación. Mejor verificar aquí y abrir automáticamente la pantalla
+        # de permisos para que el usuario lo habilite antes de empezar.
+        verificar_y_solicitar_permiso_usage_stats()
+
         # Arranca el Service nativo que vigila el uso incluso cuando Zenchi
         # está en segundo plano (única forma real de bloquear una app
         # mientras el usuario está DENTRO de ella; ver comentario al inicio
@@ -399,9 +407,11 @@ class ZenchiApp(App):
         if self.ultima_app_abierta and self.ultima_app_abierta != self._obtener_paquete_zenchi():
             # Consultar UsageStatsManager para obtener el tiempo REAL acumulado
             # desde que se abrió la app hasta ahora (cuando el usuario regresó)
+            # NOTA: rango_segundos=900 (15 min) porque queryEvents() necesita
+            # una ventana suficiente para encontrar los eventos FOREGROUND/BACKGROUND
             tiempo_real = obtener_tiempo_uso_app(
                 paquete=self.ultima_app_abierta,
-                rango_segundos=300  # Ventana de 5 minutos para cubrir sesiones típicas
+                rango_segundos=900  # Ventana de 15 minutos para asegurar datos
             )
             
             if tiempo_real > 0:
@@ -644,7 +654,13 @@ class ZenchiApp(App):
         return f"{segundos_restantes}s"
 
     def _actualizar_notificacion_uso(self) -> None:
-        """Muestra una notificación Android con progreso de uso diario."""
+        """Muestra una notificación Android con progreso de uso diario.
+        
+        # FIX (notificaciones no aparecen): Se agregó verificación explícita
+        del permiso POST_NOTIFICATIONS antes de intentar mostrar la notificación.
+        Si el permiso no está concedido, se muestra un Toast como fallback para
+        dar feedback visual al usuario sin requerir el permiso.
+        """
         try:
             import sys
             if sys.platform.startswith("win"):
@@ -666,6 +682,13 @@ class ZenchiApp(App):
                 "android.app.NotificationManager",
                 actividad.getSystemService(Context.NOTIFICATION_SERVICE),
             )
+
+            # --- FIX: Verificar si las notificaciones están habilitadas ---
+            if not notification_manager.areNotificationsEnabled():
+                print("[WARNING] Notificaciones DESACTIVADAS para Zenchi")
+                # Fallback: mostrar Toast si las notificaciones no están disponibles
+                self._mostrar_toast(f"Uso: {self._formatear_tiempo_segundos(int(self.tiempo_acumulado_hoy))} hoy")
+                return
 
             channel_id = "zenchi_usage_channel"
             if int(Build.VERSION.SDK_INT) >= 26:
@@ -700,6 +723,32 @@ class ZenchiApp(App):
             notification_manager.notify(1001, notification)
         except Exception as exc:
             print(f"[DEBUG] No se pudo actualizar la notificación de uso: {exc}")
+            # Fallback: mostrar Toast en caso de error
+            self._mostrar_toast(f"Error notificación: {exc}")
+
+    def _mostrar_toast(self, texto: str) -> None:
+        """Muestra un Toast Android (no requiere permiso de notificaciones).
+        
+        # NUEVO: Función auxiliar para mostrar feedback visual sin depender
+        # del permiso POST_NOTIFICATIONS. Útil como fallback cuando las
+        # notificaciones están desactivadas o fallan.
+        """
+        try:
+            from jnius import autoclass
+            Handler = autoclass("android.os.Handler")
+            Looper = autoclass("android.os.Looper")
+            Toast = autoclass("android.widget.Toast")
+            
+            actividad = _obtener_actividad()
+            if actividad is None:
+                print(f"[TOAST] {texto}")
+                return
+            
+            handler = Handler(Looper.getMainLooper())
+            handler.post(lambda: Toast.makeText(actividad, texto, Toast.LENGTH_SHORT).show())
+            print(f"[TOAST] {texto}")
+        except Exception as e:
+            print(f"[ERROR] No se pudo mostrar Toast: {e}")
 
     def _al_iniciar_sesion(self, *_args):
         self.sesion_activa = True
